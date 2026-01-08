@@ -6,9 +6,24 @@ Eigen CPU + Nanobind + Selective Dispatcher Integration
 
 import subprocess
 import time
-import numpy as np
 import sys
 import os
+
+# Optional scientific packages
+try:
+    import numpy as np  # type: ignore
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
+
+try:
+    import scipy  # type: ignore
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+
+# Constants
+CPP_EXE_PATH = "c:/cpp_dynamic_calc/build-ninja/cpp_dynamic_calc.exe"
 
 def print_header(title):
     """Print a fancy header"""
@@ -35,7 +50,7 @@ def test_cpp_engine(expression):
     try:
         # Call C++ engine directly
         result = subprocess.run([
-            "c:/cpp_dynamic_calc/build-ninja/cpp_dynamic_calc.exe", 
+            CPP_EXE_PATH, 
             expression
         ], capture_output=True, text=True, timeout=5)
         
@@ -121,25 +136,22 @@ def test_architecture_availability():
     print_header("Architecture Component Availability")
     
     # Test if C++ executable exists
-    cpp_exe = "c:/cpp_dynamic_calc/build-ninja/cpp_dynamic_calc.exe"
-    if os.path.exists(cpp_exe):
+    if os.path.exists(CPP_EXE_PATH):
         print("✅ C++ Engine: Available")
     else:
         print("❌ C++ Engine: Not found - may need to build project")
-        print(f"   Expected path: {cpp_exe}")
+        print(f"   Expected path: {CPP_EXE_PATH}")
     
     # Test Python components
-    try:
-        import numpy
+    if NUMPY_AVAILABLE:
         print("✅ NumPy: Available for advanced computations")
-    except ImportError:
-        print("❌ NumPy: Not available")
+    else:
+        print("⚠️  NumPy: Not installed (optional)")
     
-    try:
-        import scipy
+    if SCIPY_AVAILABLE:
         print("✅ SciPy: Available for scientific computing")
-    except ImportError:
-        print("❌ SciPy: Not available")
+    else:
+        print("⚠️  SciPy: Not installed (optional)")
     
     print("\n🔧 To build the enhanced architecture:")
     print("   1. cd c:\\cpp_dynamic_calc")
@@ -164,11 +176,11 @@ def benchmark_performance():
         print(f"\n⏱️ Benchmarking: {expr}")
         
         times = []
-        for i in range(5):  # 5 runs
+        for _ in range(5):  # 5 runs
             start = time.time()
             try:
                 result = subprocess.run([
-                    "c:/cpp_dynamic_calc/build-ninja/cpp_dynamic_calc.exe", 
+                    CPP_EXE_PATH, 
                     expr
                 ], capture_output=True, text=True, timeout=2)
                 end = time.time()
@@ -176,7 +188,7 @@ def benchmark_performance():
                 if result.returncode == 0:
                     times.append((end - start) * 1000)
                     
-            except:
+            except (subprocess.TimeoutExpired, OSError):
                 pass
         
         if times:

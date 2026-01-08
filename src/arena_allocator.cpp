@@ -42,14 +42,22 @@ MemoryArena::MemoryArena(size_t size, bool use_mmap)
 {
     if (use_memory_mapping_) {
         if (!setup_memory_mapping(size)) {
-            // Fallback to regular allocation
-            memory_base_ = std::aligned_alloc(PAGE_SIZE, arena_size_);
+            // Fallback to regular allocation (Windows uses _aligned_malloc)
+#ifdef _WIN32
+            memory_base_ = _aligned_malloc(arena_size_, PAGE_SIZE);
+#else
+            memory_base_ = ::aligned_alloc(PAGE_SIZE, arena_size_);
+#endif
             if (!memory_base_) {
                 throw std::bad_alloc();
             }
         }
     } else {
-        memory_base_ = std::aligned_alloc(PAGE_SIZE, arena_size_);
+#ifdef _WIN32
+        memory_base_ = _aligned_malloc(arena_size_, PAGE_SIZE);
+#else
+        memory_base_ = ::aligned_alloc(PAGE_SIZE, arena_size_);
+#endif
         if (!memory_base_) {
             throw std::bad_alloc();
         }

@@ -69,6 +69,14 @@ struct ExtendedEngineResult {
             if (std::holds_alternative<double>(result_value)) {
                 extended.value = std::get<double>(result_value);
             }
+            else if (std::holds_alternative<AXIOM::Number>(result_value)) {
+                // Handle AXIOM::Number type (complex numbers, reals, etc.)
+                extended.value = AXIOM::GetReal(std::get<AXIOM::Number>(result_value));
+            }
+            else if (std::holds_alternative<std::complex<double>>(result_value)) {
+                // Handle std::complex<double>
+                extended.value = std::get<std::complex<double>>(result_value).real();
+            }
             else if (std::holds_alternative<Vector>(result_value)) {
                 const auto& vec = std::get<Vector>(result_value);
                 if (!vec.empty()) {

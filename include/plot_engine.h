@@ -27,6 +27,10 @@ public:
     std::string PlotParametric(const std::string& x_expr, const std::string& y_expr, 
                               double t_min, double t_max, const PlotConfig& config = {});
     
+    // Data generation for Python plotting
+    // Samples the function over [x_min, x_max] returning rows of [x, y]
+    Matrix ComputeFunctionData(const std::string& expression, const PlotConfig& config = {}, int samples = -1);
+
     // Data plotting
     std::string PlotData(const Vector& x_data, const Vector& y_data, const PlotConfig& config = {});
     std::string Histogram(const Vector& data, int bins = 10, const PlotConfig& config = {});

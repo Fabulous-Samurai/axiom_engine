@@ -17,7 +17,7 @@ std::string CPUOptimization::GetCPUInfo() {
 }
 
 void CPUOptimization::OptimizeForCurrentCPU() {
-    std::cout << "🏎️ CPU optimizations applied for Senna speed!" << std::endl;
+    std::cout << "CPU optimizations applied for Senna speed!" << std::endl;
 }
 
 bool CPUOptimization::DetectSSE() {

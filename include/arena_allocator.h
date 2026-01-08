@@ -28,6 +28,10 @@
     #include <unistd.h>
 #endif
 
+#ifdef ENABLE_EIGEN
+    #include <Eigen/Dense>
+#endif
+
 namespace AXIOM {
 
 /**
@@ -151,6 +155,17 @@ private:
         int numa_node;
         std::mutex allocation_mutex;
         std::atomic<size_t> active_allocations;
+        
+        // Default constructor
+        PoolInfo() : type(PoolType::SMALL_OBJECTS), numa_node(0), active_allocations(0) {}
+        
+        // Explicit move constructor since mutex is not moveable
+        PoolInfo(PoolInfo&& other) noexcept 
+            : arena(std::move(other.arena))
+            , type(other.type)
+            , numa_node(other.numa_node)
+            , allocation_mutex()
+            , active_allocations(other.active_allocations.load()) {}
     };
     
     std::vector<PoolInfo> pools_;
@@ -308,6 +323,7 @@ public:
     size_t stride() const { return row_stride_; }
 };
 
+#ifdef ENABLE_EIGEN
 /**
  * @brief Eigen Integration Helper
  * 
@@ -323,7 +339,7 @@ namespace EigenIntegration {
     template<typename Scalar>
     class ArenaAlignedAllocator {
     public:
-        using Scalar = Scalar;
+        using value_type = Scalar;
         MemoryArena* arena_;
         
         ArenaAlignedAllocator(MemoryArena* arena = nullptr) : arena_(arena) {}
@@ -346,6 +362,7 @@ namespace EigenIntegration {
         }
     };
 }
+#endif // ENABLE_EIGEN
 
 /**
  * @brief Memory Performance Profiler

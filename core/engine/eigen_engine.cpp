@@ -45,9 +45,6 @@ EigenEngine::EigenEngine()
     last_metrics_.cache_misses = 0;
     last_metrics_.simd_operations = 0;
     last_metrics_.parallel_operations = 0;
-    
-    std::cout << "✅ Eigen CPU Engine initialized with " 
-              << Eigen::nbThreads() << " threads\n";
 #else
     throw std::runtime_error("Eigen Engine not available - compile with ENABLE_EIGEN");
 #endif

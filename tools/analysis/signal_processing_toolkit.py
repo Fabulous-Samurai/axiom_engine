@@ -11,6 +11,12 @@ from scipy.fft import fft, ifft, fftfreq
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+# Constants
+DEFAULT_FONT = 'Segoe UI'
+SIGNAL_TYPE_SINE = "Sine Wave"
+TIME_LABEL = 'Time (s)'
+FREQ_LABEL = 'Frequency (Hz)'
+
 class SignalProcessingToolkit:
     """🎛️ Professional Signal Processing Toolkit 🎛️"""
     
@@ -18,9 +24,13 @@ class SignalProcessingToolkit:
         self.parent_gui = parent_gui
         self.signals = {}  # Store signals
         self.sampling_rate = 1000  # Default sampling rate
+        self.filter_coeffs = None  # Filter coefficients
+        self.rng = np.random.default_rng(42)  # Random number generator with seed
         
     def create_test_signals(self):
         """Create various test signals for demonstration"""
+        # Reseed for deterministic test signal generation
+        self.rng = np.random.default_rng(42)
         t = np.linspace(0, 1, self.sampling_rate, endpoint=False)
         
         # Test signals
@@ -30,14 +40,58 @@ class SignalProcessingToolkit:
             'square_wave': signal.square(2 * np.pi * 25 * t),  # 25 Hz square
             'sawtooth_wave': signal.sawtooth(2 * np.pi * 40 * t),  # 40 Hz sawtooth
             'chirp_signal': signal.chirp(t, f0=10, f1=100, t1=1, method='linear'),
-            'noise': np.random.normal(0, 0.1, len(t)),
+            'noise': self.rng.normal(0, 0.1, len(t)),
             'mixed_signal': (np.sin(2 * np.pi * 50 * t) + 
                            0.5 * np.sin(2 * np.pi * 120 * t) + 
-                           0.2 * np.random.normal(0, 1, len(t)))
+                           0.2 * self.rng.normal(0, 1, len(t)))
         }
         
         self.time_vector = t
         return self.signals
+    
+    def signal_processing_gui(self):
+        """Main signal processing GUI hub"""
+        hub_window = tk.Toplevel()
+        hub_window.title("🎛️ Signal Processing Toolkit")
+        hub_window.geometry("700x600")
+        
+        ttk.Label(hub_window, text="🎛️ AXIOM Signal Processing Toolkit", 
+                 font=(DEFAULT_FONT, 14, 'bold')).pack(pady=10)
+        
+        # Main menu
+        main_frame = ttk.Frame(hub_window)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        # Tool categories
+        tools = [
+            ("📊 Signal Generation", self.generate_signal_gui, "Create various signal types"),
+            ("🎚️ Filter Design", self.filter_design_gui, "Design digital filters"),
+            ("📈 Spectral Analysis", self.spectral_analysis_gui, "Frequency domain analysis"),
+            ("🎵 Spectrogram", lambda: self.spectrogram_analysis(list(self.signals.keys())[0] if self.signals else None), "Time-frequency analysis"),
+            ("📊 FFT Analysis", lambda: self.fft_analysis(list(self.signals.keys())[0] if self.signals else None), "Fast Fourier Transform"),
+            ("🎯 Peak Detection", lambda: self.peak_detection(list(self.signals.keys())[0] if self.signals else None), "Find signal peaks"),
+        ]
+        
+        for i, (name, command, description) in enumerate(tools):
+            tool_frame = ttk.LabelFrame(main_frame, text=name)
+            tool_frame.grid(row=i//2, column=i%2, padx=10, pady=10, sticky='ew')
+            
+            ttk.Label(tool_frame, text=description, wraplength=250).pack(pady=5)
+            ttk.Button(tool_frame, text="Launch", command=command).pack(pady=5)
+        
+        # Quick actions
+        action_frame = ttk.LabelFrame(main_frame, text="Quick Actions")
+        action_frame.grid(row=(len(tools)+1)//2, column=0, columnspan=2, padx=10, pady=10, sticky='ew')
+        
+        ttk.Button(action_frame, text="📦 Load Test Signals", 
+                  command=lambda: [self.create_test_signals(), 
+                                  messagebox.showinfo("Success", f"Loaded {len(self.signals)} test signals")]).pack(side=tk.LEFT, padx=5, pady=5)
+        ttk.Button(action_frame, text="📋 List Signals", 
+                  command=lambda: messagebox.showinfo("Available Signals", 
+                                                     "\\n".join(self.signals.keys()) if self.signals else "No signals loaded")).pack(side=tk.LEFT, padx=5, pady=5)
+        ttk.Button(action_frame, text="🗑️ Clear All", 
+                  command=lambda: [self.signals.clear(), 
+                                  messagebox.showinfo("Cleared", "All signals cleared")]).pack(side=tk.LEFT, padx=5, pady=5)
     
     def generate_signal_gui(self):
         """Open signal generation GUI"""
@@ -46,18 +100,18 @@ class SignalProcessingToolkit:
         gen_window.geometry("600x500")
         
         # Signal type selection
-        ttk.Label(gen_window, text="Signal Type:", font=('Segoe UI', 12, 'bold')).pack(pady=10)
+        ttk.Label(gen_window, text="Signal Type:", font=(DEFAULT_FONT, 12, 'bold')).pack(pady=10)
         
         signal_frame = ttk.Frame(gen_window)
         signal_frame.pack(fill=tk.X, padx=20, pady=10)
         
         signal_types = [
-            "Sine Wave", "Cosine Wave", "Square Wave", 
+            SIGNAL_TYPE_SINE, "Cosine Wave", "Square Wave", 
             "Sawtooth Wave", "Triangle Wave", "Chirp Signal",
             "White Noise", "Pink Noise", "Impulse"
         ]
         
-        signal_var = tk.StringVar(value="Sine Wave")
+        signal_var = tk.StringVar(value=SIGNAL_TYPE_SINE)
         for i, sig_type in enumerate(signal_types):
             ttk.Radiobutton(signal_frame, text=sig_type, 
                            variable=signal_var, value=sig_type).grid(
@@ -112,6 +166,7 @@ class SignalProcessingToolkit:
                 t = np.linspace(0, duration, int(fs * duration), endpoint=False)
                 
                 # Generate signal
+                sig = np.zeros(len(t))  # Initialize
                 if sig_type == "Sine Wave":
                     sig = amp * np.sin(2 * np.pi * freq * t + phase)
                 elif sig_type == "Cosine Wave":
@@ -125,9 +180,9 @@ class SignalProcessingToolkit:
                 elif sig_type == "Chirp Signal":
                     sig = amp * signal.chirp(t, f0=freq, f1=freq*2, t1=duration, method='linear')
                 elif sig_type == "White Noise":
-                    sig = amp * np.random.normal(0, 1, len(t))
+                    sig = amp * self.rng.normal(0, 1, len(t))
                 elif sig_type == "Pink Noise":
-                    white = np.random.normal(0, 1, len(t))
+                    white = self.rng.normal(0, 1, len(t))
                     sig = amp * self.pink_noise_filter(white)
                 elif sig_type == "Impulse":
                     sig = np.zeros(len(t))
@@ -178,28 +233,28 @@ class SignalProcessingToolkit:
         # Time domain
         ax1.plot(self.time_vector, sig, 'b-', linewidth=1)
         ax1.set_title('Time Domain')
-        ax1.set_xlabel('Time (s)')
+        ax1.set_xlabel(TIME_LABEL)
         ax1.set_ylabel('Amplitude')
         ax1.grid(True, alpha=0.3)
         
         # Magnitude spectrum
         ax2.plot(frequencies[:len(frequencies)//2], magnitude[:len(magnitude)//2], 'r-', linewidth=1)
         ax2.set_title('Magnitude Spectrum')
-        ax2.set_xlabel('Frequency (Hz)')
+        ax2.set_xlabel(FREQ_LABEL)
         ax2.set_ylabel('Magnitude')
         ax2.grid(True, alpha=0.3)
         
         # Phase spectrum
         ax3.plot(frequencies[:len(frequencies)//2], phase[:len(phase)//2], 'g-', linewidth=1)
         ax3.set_title('Phase Spectrum')
-        ax3.set_xlabel('Frequency (Hz)')
+        ax3.set_xlabel(FREQ_LABEL)
         ax3.set_ylabel('Phase (rad)')
         ax3.grid(True, alpha=0.3)
         
         # Power spectral density
         ax4.semilogy(f_psd, psd, 'm-', linewidth=2)
         ax4.set_title('Power Spectral Density')
-        ax4.set_xlabel('Frequency (Hz)')
+        ax4.set_xlabel(FREQ_LABEL)
         ax4.set_ylabel('PSD (V²/Hz)')
         ax4.grid(True, alpha=0.3)
         
@@ -221,7 +276,7 @@ class SignalProcessingToolkit:
         filter_window.geometry("700x600")
         
         # Filter type
-        ttk.Label(filter_window, text="Filter Design", font=('Segoe UI', 14, 'bold')).pack(pady=10)
+        ttk.Label(filter_window, text="Filter Design", font=(DEFAULT_FONT, 14, 'bold')).pack(pady=10)
         
         type_frame = ttk.LabelFrame(filter_window, text="Filter Type")
         type_frame.pack(fill=tk.X, padx=20, pady=10)
@@ -284,7 +339,8 @@ class SignalProcessingToolkit:
                 else:  # bandpass, bandstop
                     critical = [low_freq / nyquist, high_freq / nyquist]
                 
-                # Design filter
+                # Design filter (initialize b, a)
+                b, a = None, None
                 if method == "butterworth":
                     b, a = signal.butter(order, critical, btype=ftype)
                 elif method == "chebyshev1":
@@ -305,7 +361,7 @@ class SignalProcessingToolkit:
                 # Magnitude response
                 ax1.plot(frequencies, 20 * np.log10(np.abs(h)), 'b-', linewidth=2)
                 ax1.set_title('Magnitude Response')
-                ax1.set_xlabel('Frequency (Hz)')
+                ax1.set_xlabel(FREQ_LABEL)
                 ax1.set_ylabel('Magnitude (dB)')
                 ax1.grid(True, alpha=0.3)
                 ax1.set_xlim(0, self.sampling_rate/2)
@@ -313,7 +369,7 @@ class SignalProcessingToolkit:
                 # Phase response
                 ax2.plot(frequencies, np.angle(h), 'r-', linewidth=2)
                 ax2.set_title('Phase Response')
-                ax2.set_xlabel('Frequency (Hz)')
+                ax2.set_xlabel(FREQ_LABEL)
                 ax2.set_ylabel('Phase (rad)')
                 ax2.grid(True, alpha=0.3)
                 ax2.set_xlim(0, self.sampling_rate/2)
@@ -323,7 +379,7 @@ class SignalProcessingToolkit:
                 freq_gd = w_gd * self.sampling_rate / (2 * np.pi)
                 ax3.plot(freq_gd, gd, 'g-', linewidth=2)
                 ax3.set_title('Group Delay')
-                ax3.set_xlabel('Frequency (Hz)')
+                ax3.set_xlabel(FREQ_LABEL)
                 ax3.set_ylabel('Group Delay (samples)')
                 ax3.grid(True, alpha=0.3)
                 ax3.set_xlim(0, self.sampling_rate/2)
@@ -348,13 +404,18 @@ class SignalProcessingToolkit:
             print(f"Signal '{signal_name}' not found!")
             return
         
-        if filter_coeffs is None and not hasattr(self, 'filter_coeffs'):
+        if filter_coeffs is None and self.filter_coeffs is None:
             print("No filter designed! Use filter_design_gui() first.")
             return
         
         if filter_coeffs is None:
             filter_coeffs = self.filter_coeffs
         
+        # Ensure filter_coeffs is not None before unpacking
+        if filter_coeffs is None:
+            print("Filter coefficients are None")
+            return
+            
         b, a = filter_coeffs
         sig = self.signals[signal_name]
         
@@ -368,7 +429,7 @@ class SignalProcessingToolkit:
         # Original signal
         ax1.plot(self.time_vector, sig, 'b-', linewidth=1, label='Original')
         ax1.set_title('Original Signal')
-        ax1.set_xlabel('Time (s)')
+        ax1.set_xlabel(TIME_LABEL)
         ax1.set_ylabel('Amplitude')
         ax1.grid(True, alpha=0.3)
         ax1.legend()
@@ -376,7 +437,7 @@ class SignalProcessingToolkit:
         # Filtered signal
         ax2.plot(self.time_vector, filtered_sig, 'r-', linewidth=1, label='Filtered')
         ax2.set_title('Filtered Signal')
-        ax2.set_xlabel('Time (s)')
+        ax2.set_xlabel(TIME_LABEL)
         ax2.set_ylabel('Amplitude')
         ax2.grid(True, alpha=0.3)
         ax2.legend()
@@ -385,7 +446,7 @@ class SignalProcessingToolkit:
         ax3.plot(self.time_vector, sig, 'b-', linewidth=1, label='Original', alpha=0.7)
         ax3.plot(self.time_vector, filtered_sig, 'r-', linewidth=1, label='Filtered')
         ax3.set_title('Comparison')
-        ax3.set_xlabel('Time (s)')
+        ax3.set_xlabel(TIME_LABEL)
         ax3.set_ylabel('Amplitude')
         ax3.grid(True, alpha=0.3)
         ax3.legend()
@@ -405,7 +466,7 @@ class SignalProcessingToolkit:
         spec_window.geometry("800x600")
         
         ttk.Label(spec_window, text="Spectral Analysis Tools", 
-                 font=('Segoe UI', 14, 'bold')).pack(pady=10)
+                 font=(DEFAULT_FONT, 14, 'bold')).pack(pady=10)
         
         # Signal selection
         signal_frame = ttk.LabelFrame(spec_window, text="Select Signal")
@@ -438,14 +499,14 @@ class SignalProcessingToolkit:
     
     def spectrogram_analysis(self, signal_name):
         """Generate spectrogram"""
-        if signal_name not in self.signals:
+        if not signal_name or signal_name not in self.signals:
             messagebox.showerror("Error", f"Signal '{signal_name}' not found!")
             return
         
         sig = self.signals[signal_name]
         
         # Compute spectrogram
-        f, t, Sxx = signal.spectrogram(sig, self.sampling_rate, nperseg=256)
+        f, t, sxx = signal.spectrogram(sig, self.sampling_rate, nperseg=256)
         
         # Plot spectrogram
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
@@ -454,15 +515,15 @@ class SignalProcessingToolkit:
         # Time domain signal
         ax1.plot(self.time_vector, sig, 'b-', linewidth=1)
         ax1.set_title('Time Domain Signal')
-        ax1.set_xlabel('Time (s)')
+        ax1.set_xlabel(TIME_LABEL)
         ax1.set_ylabel('Amplitude')
         ax1.grid(True, alpha=0.3)
         
         # Spectrogram
-        im = ax2.pcolormesh(t, f, 10 * np.log10(Sxx), shading='gouraud', cmap='jet')
+        im = ax2.pcolormesh(t, f, 10 * np.log10(sxx), shading='gouraud', cmap='jet')
         ax2.set_title('Spectrogram')
-        ax2.set_xlabel('Time (s)')
-        ax2.set_ylabel('Frequency (Hz)')
+        ax2.set_xlabel(TIME_LABEL)
+        ax2.set_ylabel(FREQ_LABEL)
         plt.colorbar(im, ax=ax2, label='Power (dB)')
         
         plt.tight_layout()
@@ -486,10 +547,137 @@ class SignalProcessingToolkit:
         
         ax.semilogy(f_welch, psd_welch, 'b-', linewidth=2, label='Welch Method')
         ax.semilogy(f_periodogram, psd_periodogram, 'r-', linewidth=1, alpha=0.7, label='Periodogram')
-        ax.set_xlabel('Frequency (Hz)')
+        ax.set_xlabel(FREQ_LABEL)
         ax.set_ylabel('PSD (V²/Hz)')
         ax.grid(True, alpha=0.3)
         ax.legend()
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def fft_analysis(self, signal_name):
+        """Perform FFT analysis on a signal"""
+        if signal_name not in self.signals:
+            messagebox.showerror("Error", f"Signal '{signal_name}' not found!")
+            return
+        
+        sig = self.signals[signal_name]
+        
+        # Perform FFT
+        fft_result = fft(sig)
+        frequencies = fftfreq(len(sig), 1/self.sampling_rate)
+        magnitude = np.abs(fft_result)
+        
+        # Plot
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+        fig.suptitle(f'📊 FFT Analysis: {signal_name}', fontsize=14, fontweight='bold')
+        
+        # Time domain
+        ax1.plot(self.time_vector, sig, 'b-', linewidth=1)
+        ax1.set_title('Time Domain')
+        ax1.set_xlabel(TIME_LABEL)
+        ax1.set_ylabel('Amplitude')
+        ax1.grid(True, alpha=0.3)
+        
+        # Frequency domain
+        ax2.plot(frequencies[:len(frequencies)//2], magnitude[:len(magnitude)//2], 'r-', linewidth=1)
+        ax2.set_title('FFT Magnitude')
+        ax2.set_xlabel(FREQ_LABEL)
+        ax2.set_ylabel('Magnitude')
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def peak_detection(self, signal_name):
+        """Detect peaks in a signal"""
+        if signal_name not in self.signals:
+            messagebox.showerror("Error", f"Signal '{signal_name}' not found!")
+            return
+        
+        sig = self.signals[signal_name]
+        
+        # Find peaks
+        peaks, _ = signal.find_peaks(sig, height=np.mean(sig), distance=10)
+        
+        # Plot
+        _, ax = plt.subplots(figsize=(12, 6))
+        ax.plot(self.time_vector, sig, 'b-', linewidth=1, label='Signal')
+        ax.plot(self.time_vector[peaks], sig[peaks], 'ro', markersize=8, label='Peaks')
+        ax.set_title(f'🎯 Peak Detection: {signal_name} ({len(peaks)} peaks found)', 
+                    fontsize=14, fontweight='bold')
+        ax.set_xlabel(TIME_LABEL)
+        ax.set_ylabel('Amplitude')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def correlation_analysis(self, signal_name):
+        """Perform cross-correlation analysis"""
+        if signal_name not in self.signals:
+            messagebox.showerror("Error", f"Signal '{signal_name}' not found!")
+            return
+        
+        sig = self.signals[signal_name]
+        
+        # Auto-correlation
+        autocorr = np.correlate(sig, sig, mode='full')
+        lags = np.arange(-len(sig)+1, len(sig))
+        
+        # Plot
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+        fig.suptitle(f'📐 Correlation Analysis: {signal_name}', fontsize=14, fontweight='bold')
+        
+        # Original signal
+        ax1.plot(self.time_vector, sig, 'b-', linewidth=1)
+        ax1.set_title('Original Signal')
+        ax1.set_xlabel(TIME_LABEL)
+        ax1.set_ylabel('Amplitude')
+        ax1.grid(True, alpha=0.3)
+        
+        # Auto-correlation
+        ax2.plot(lags / self.sampling_rate, autocorr, 'r-', linewidth=1)
+        ax2.set_title('Auto-correlation')
+        ax2.set_xlabel('Lag (s)')
+        ax2.set_ylabel('Correlation')
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def wavelet_analysis(self, signal_name):
+        """Perform wavelet transform analysis"""
+        if signal_name not in self.signals:
+            messagebox.showerror("Error", f"Signal '{signal_name}' not found!")
+            return
+        
+        sig = self.signals[signal_name]
+        
+        # Simple continuous wavelet transform using Morlet wavelet
+        widths = np.arange(1, 31)
+        cwtmatr = signal.cwt(sig, signal.morlet2, widths)
+        
+        # Plot
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+        fig.suptitle(f'🌊 Wavelet Analysis: {signal_name}', fontsize=14, fontweight='bold')
+        
+        # Time domain signal
+        ax1.plot(self.time_vector, sig, 'b-', linewidth=1)
+        ax1.set_title('Time Domain Signal')
+        ax1.set_xlabel(TIME_LABEL)
+        ax1.set_ylabel('Amplitude')
+        ax1.grid(True, alpha=0.3)
+        
+        # Wavelet transform
+        im = ax2.imshow(np.abs(cwtmatr), extent=[0, len(sig)/self.sampling_rate, 1, 31], 
+                       cmap='jet', aspect='auto', vmax=np.abs(cwtmatr).max(), 
+                       vmin=0, origin='lower')
+        ax2.set_title('Continuous Wavelet Transform')
+        ax2.set_xlabel(TIME_LABEL)
+        ax2.set_ylabel('Scale')
+        plt.colorbar(im, ax=ax2, label='Magnitude')
         
         plt.tight_layout()
         plt.show()

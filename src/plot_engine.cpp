@@ -20,13 +20,16 @@ std::string PlotEngine::PlotFunction(const std::string& expression, const PlotCo
         
         auto result = parser.ParseAndExecuteWithContext(expression, context);
         if (result.result.has_value()) {
-            double y = std::get<double>(*result.result);
+            auto y_opt = result.GetDouble();
+            if (y_opt.has_value()) {
+                double y = *y_opt;
             
-            if (std::isfinite(y) && y >= config.y_min && y <= config.y_max) {
-                auto [screen_x, screen_y] = MapToScreen(x, y, config);
-                if (screen_x >= 0 && screen_x < config.width && 
-                    screen_y >= 0 && screen_y < config.height) {
-                    lines[screen_y][screen_x] = config.plot_char;
+                if (std::isfinite(y) && y >= config.y_min && y <= config.y_max) {
+                    auto [screen_x, screen_y] = MapToScreen(x, y, config);
+                    if (screen_x >= 0 && screen_x < config.width && 
+                        screen_y >= 0 && screen_y < config.height) {
+                        lines[screen_y][screen_x] = config.plot_char;
+                    }
                 }
             }
         }
@@ -66,6 +69,35 @@ std::string PlotEngine::PlotFunction(const std::string& expression, const PlotCo
     }
     
     return result.str();
+}
+
+Matrix PlotEngine::ComputeFunctionData(const std::string& expression, const PlotConfig& config, int samples) {
+    AlgebraicParser parser;
+    Matrix data;
+    // Determine sample count: default to plot width for consistency
+    const int n = (samples > 0) ? samples : std::max(2, config.width);
+    const double x_step = (config.x_max - config.x_min) / (n - 1);
+
+    data.reserve(static_cast<size_t>(n));
+
+    for (int i = 0; i < n; ++i) {
+        const double x = config.x_min + i * x_step;
+        std::map<std::string, double> context;
+        context["x"] = x;
+
+        auto result = parser.ParseAndExecuteWithContext(expression, context);
+        if (result.result.has_value()) {
+            auto y_opt = result.GetDouble();
+            if (y_opt.has_value()) {
+                const double y = *y_opt;
+                if (std::isfinite(y)) {
+                    data.push_back({x, y});
+                }
+            }
+        }
+    }
+
+    return data;
 }
 
 std::string PlotEngine::PlotData(const Vector& x_data, const Vector& y_data, const PlotConfig& config) {

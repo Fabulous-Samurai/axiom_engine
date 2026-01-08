@@ -5,6 +5,8 @@
 #include "dynamic_calc.h"
 #include "algebraic_parser.h"
 #include "linear_system_parser.h"
+#include "statistics_parser.h"
+#include "symbolic_parser.h"
 #include "unit_parser.h"
 #ifdef ENABLE_PYTHON_FFI
 #include "python_parser.h"
@@ -37,8 +39,10 @@ DynamicCalc::DynamicCalc() {
     statistics_engine_ = std::make_unique<StatisticsEngine>();
     plot_engine_ = std::make_unique<PlotEngine>();
     
-    // Initialize unit parser
+    // Initialize unit/statistics/symbolic parsers
     parsers_[CalculationMode::UNITS] = std::make_unique<UnitParser>(unit_manager_.get());
+    parsers_[CalculationMode::STATISTICS] = std::make_unique<StatisticsParser>(statistics_engine_.get());
+    parsers_[CalculationMode::SYMBOLIC] = std::make_unique<SymbolicParser>(symbolic_engine_.get());
     
 #ifdef ENABLE_PYTHON_FFI
     // Python engine disabled for pure C++ performance
@@ -76,7 +80,7 @@ EngineResult DynamicCalc::calculate(const std::string& input, CalculationMode mo
 EngineResult DynamicCalc::EvaluateWithContext(const std::string& input,const std::map<std::string,double>& context){
     // DEBUG: Test if this function is called at all
     if (input == "test") {
-        return {EngineSuccessResult("DEBUG: EvaluateWithContext called"), {}};
+        return EngineSuccessResult("DEBUG: EvaluateWithContext called");
     }
     
     // Handle special commands that work across all modes
@@ -137,29 +141,21 @@ EngineResult DynamicCalc::EvaluateWithContext(const std::string& input,const std
                     config.height = 20;
                     config.show_axes = true;
                     config.plot_char = '*';
-                    
-                    std::string plot_result = plot_engine_->PlotFunction(expression, config);
-                    return {EngineSuccessResult(plot_result), {}};
+                    // Return numeric data for Python-side plotting
+                    Matrix data = plot_engine_->ComputeFunctionData(expression, config);
+                    return EngineSuccessResult(data);
                     
                 } catch (const std::exception&) {
-                    return {{}, {EngineErrorResult(CalcErr::ArgumentMismatch)}};
+                    EngineResult err_result; err_result.error = EngineErrorResult(CalcErr::ArgumentMismatch); return err_result;
                 }
             } else {
                 // If wrong number of arguments, show a helpful error
-                return {{}, {EngineErrorResult(CalcErr::ArgumentMismatch)}};
+                EngineResult err_result; err_result.error = EngineErrorResult(CalcErr::ArgumentMismatch); return err_result;
             }
         }
     }
     
-    if (input.find("stats ") == 0 && current_mode_ != CalculationMode::STATISTICS) {
-        // Handle basic stats commands like "stats mean [1,2,3,4]"
-        return {{}, {CalcErr::OperationNotFound}}; // Placeholder
-    }
-    
-    if (input.find("convert ") == 0 || input.find(" to ") != std::string::npos) {
-        auto unit_result = unit_manager_->ConvertUnit(1.0, "m", "ft"); // Parse properly
-        return unit_result;
-    }
+    // Let parsers handle stats and units exclusively
     
     auto it = parsers_.find(current_mode_);
     if(it == parsers_.end()){

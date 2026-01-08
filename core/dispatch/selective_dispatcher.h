@@ -14,6 +14,12 @@
 #include <string>
 #include <chrono>
 
+// Forward declare global PythonEngine to allow unique_ptr without pulling
+// Python headers into the AXIOM namespace (to avoid symbol pollution).
+#ifdef ENABLE_PYTHON_FFI
+class PythonEngine;
+#endif
+
 namespace AXIOM {
 
 /**
@@ -65,10 +71,6 @@ struct DispatchMetrics {
 // Forward declarations for optional engine types
 #ifdef ENABLE_EIGEN
 class EigenEngine;
-#endif
-
-#ifdef ENABLE_NANOBIND
-class PythonEngine;
 #endif
 
 /**
@@ -135,14 +137,15 @@ private:
     std::unordered_map<ComputeEngine, 
                       std::unordered_map<std::string, EnginePerformance>> engine_performance_;
     
-    // Engine instances temporarily disabled until classes are fully implemented
-    // #ifdef ENABLE_EIGEN
-    // std::unique_ptr<EigenEngine> eigen_engine_;
-    // #endif
+    // Engine instances (conditionally compiled)
+    #ifdef ENABLE_EIGEN
+    std::unique_ptr<EigenEngine> eigen_engine_;
+    #endif
 
-    // #ifdef ENABLE_NANOBIND  
-    // std::unique_ptr<PythonEngine> python_engine_;
-    // #endif
+    // Python engine (enabled when ENABLE_PYTHON_FFI)
+    #ifdef ENABLE_PYTHON_FFI
+    std::unique_ptr<::PythonEngine> python_engine_;
+    #endif
 };
 
 // Convenience namespace for global dispatcher access

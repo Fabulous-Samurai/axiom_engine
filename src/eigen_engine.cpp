@@ -27,7 +27,7 @@ EigenEngine::EigenEngine()
     , simd_enabled_(true)
     , num_threads_(std::thread::hardware_concurrency()) {
     
-    // Initialize Eigen with optimal settings for Senna Speed! 🏎️
+    // Initialize Eigen with optimal settings for Senna Speed!
     Eigen::initParallel();
     
 #ifdef _OPENMP
@@ -47,7 +47,7 @@ EigenEngine::EigenEngine()
 
     ResetMetrics();
     
-    std::cout << "🏎️ EigenEngine initialized with Senna Speed optimization!" << std::endl;
+    std::cout << "EigenEngine initialized with Senna Speed optimization!" << std::endl;
     std::cout << "   Threads: " << num_threads_ << std::endl;
     std::cout << "   SIMD: " << (simd_enabled_ ? "Enabled" : "Disabled") << std::endl;
 }
@@ -216,11 +216,11 @@ std::pair<EigenEngine::Vector, EigenEngine::Matrix> EigenEngine::EigenDecomposit
     }
 }
 
-std::pair<EigenEngine::Matrix, EigenEngine::Vector, EigenEngine::Matrix> EigenEngine::SVD(const Matrix& A) {
+std::tuple<EigenEngine::Matrix, EigenEngine::Vector, EigenEngine::Matrix> EigenEngine::SVD(const Matrix& A) {
     SENNA_SPEED_EIGEN("SVD");
     
     Eigen::JacobiSVD<Matrix> svd(A, Eigen::ComputeFullU | Eigen::ComputeFullV);
-    return {svd.matrixU(), svd.singularValues(), svd.matrixV()};
+    return std::make_tuple(svd.matrixU(), svd.singularValues(), svd.matrixV());
 }
 
 EigenEngine::Vector EigenEngine::SolveLinearSystem(const Matrix& A, const Vector& b) {
@@ -325,7 +325,7 @@ void EigenEngine::ResetMetrics() {
 
 std::string EigenEngine::GetPerformanceReport() const {
     std::stringstream ss;
-    ss << "🏎️ Eigen Engine Performance Report:\n";
+    ss << "Eigen Engine Performance Report:\n";
     ss << "   Last Operation: " << last_metrics_.operation_type << "\n";
     ss << "   Execution Time: " << last_metrics_.execution_time_ms << " ms\n";
     ss << "   Memory Used: " << last_metrics_.memory_used_bytes << " bytes\n";
@@ -342,7 +342,7 @@ std::string EigenEngine::GetPerformanceReport() const {
     
     // Performance classification (Senna Speed style!)
     if (last_metrics_.execution_time_ms < 1.0) {
-        ss << "\n   🏎️ SENNA SPEED: Lightning Fast! (<1ms)";
+        ss << "\n   SENNA SPEED: Lightning Fast! (<1ms)";
     } else if (last_metrics_.execution_time_ms < 10.0) {
         ss << "\n   🏁 FORMULA 1 Speed: Very Fast! (<10ms)";
     } else if (last_metrics_.execution_time_ms < 100.0) {
@@ -359,8 +359,8 @@ EigenEngine::Matrix EigenEngine::OptimizedMatMul(const Matrix& A, const Matrix& 
     // Use Eigen's optimized BLAS if available
     Matrix result = A * B;
     
-    // Update metrics to indicate SIMD usage
-    const_cast<EigenEngine*>(this)->last_metrics_.simd_used = simd_enabled_;
+    // THREAD-SAFETY FIX: No const_cast needed - last_metrics_ is mutable
+    last_metrics_.simd_used = simd_enabled_;
     
     return result;
 }
@@ -368,8 +368,8 @@ EigenEngine::Matrix EigenEngine::OptimizedMatMul(const Matrix& A, const Matrix& 
 EigenEngine::Vector EigenEngine::OptimizedMatVecMul(const Matrix& A, const Vector& x) const {
     Vector result = A * x;
     
-    // Update metrics
-    const_cast<EigenEngine*>(this)->last_metrics_.simd_used = simd_enabled_;
+    // THREAD-SAFETY FIX: No const_cast needed - last_metrics_ is mutable
+    last_metrics_.simd_used = simd_enabled_;
     
     return result;
 }
@@ -377,14 +377,14 @@ EigenEngine::Vector EigenEngine::OptimizedMatVecMul(const Matrix& A, const Vecto
 #ifdef __AVX2__
 void EigenEngine::EnableAVX2() {
     // AVX2 optimizations would be implemented here
-    std::cout << "   🚀 AVX2 SIMD acceleration enabled!" << std::endl;
+    std::cout << "   AVX2 SIMD acceleration enabled!" << std::endl;
 }
 #endif
 
 #ifdef __SSE4_1__
 void EigenEngine::EnableSSE41() {
     // SSE4.1 optimizations would be implemented here
-    std::cout << "   ⚡ SSE4.1 SIMD acceleration enabled!" << std::endl;
+    std::cout << "   SSE4.1 SIMD acceleration enabled!" << std::endl;
 }
 #endif
 
@@ -395,13 +395,8 @@ PerformanceTimer::PerformanceTimer(const std::string& operation_name)
 }
 
 PerformanceTimer::~PerformanceTimer() {
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time_);
-    double elapsed_ms = duration.count() / 1000.0;
-    
-    if (elapsed_ms < 1.0) {
-        std::cout << "🏎️ " << operation_name_ << ": " << elapsed_ms << "ms (Senna Speed!)" << std::endl;
-    }
+    // Performance timing suppressed for maximum speed
+    // Timing data stored internally but not printed to avoid I/O overhead
 }
 
 double PerformanceTimer::GetElapsedMs() const {
@@ -419,17 +414,18 @@ auto EigenEngine::MeasurePerformance(Func&& func, const std::string& operation) 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     
-    const_cast<EigenEngine*>(this)->UpdateMetrics(operation, duration.count() / 1000.0, sizeof(result));
+    // THREAD-SAFETY FIX: No const_cast needed - UpdateMetrics uses mutable members
+    UpdateMetrics(operation, duration.count() / 1000.0, sizeof(result));
     
     return result;
 }
 
 void EigenEngine::UpdateMetrics(const std::string& operation, double time_ms, size_t memory_bytes) const {
-    auto* mutable_this = const_cast<EigenEngine*>(this);
-    mutable_this->last_metrics_.operation_type = operation;
-    mutable_this->last_metrics_.execution_time_ms = time_ms;
-    mutable_this->last_metrics_.memory_used_bytes = memory_bytes;
-    mutable_this->last_metrics_.simd_used = simd_enabled_;
+    // THREAD-SAFETY FIX: No const_cast needed - last_metrics_ is mutable
+    last_metrics_.operation_type = operation;
+    last_metrics_.execution_time_ms = time_ms;
+    last_metrics_.memory_used_bytes = memory_bytes;
+    last_metrics_.simd_used = simd_enabled_;
 }
 
 } // namespace AXIOM

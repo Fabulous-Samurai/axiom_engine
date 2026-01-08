@@ -11,6 +11,9 @@
 #include <memory>
 #include <chrono>
 #include <thread>
+#include <algorithm>
+#include <cctype>
+#include <variant>
 
 #include "dynamic_calc.h"
 #include "extended_types.h"
@@ -28,9 +31,7 @@
     #include "symengine_integration.h"
 #endif
 
-#ifdef ENABLE_FTXUI
-    #include "ftxui_gui.h"
-#endif
+
 
 void print_axiom_banner() {
     std::cout << "\n";
@@ -55,7 +56,7 @@ void print_help() {
     std::cout << "Interactive Modes:\n";
     std::cout << "  axiom                       Start interactive calculator\n";
     std::cout << "  axiom --gui                 Start GUI interface\n";
-    std::cout << "  axiom --tui                 Start text-based UI (FTXUI)\n\n";
+
     
     std::cout << "Enterprise Daemon Mode:\n";
     std::cout << "  axiom --daemon              Start as background daemon\n";
@@ -270,7 +271,7 @@ int run_daemon_mode(const std::vector<std::string>& args) {
         return 1;
     }
     
-    std::cout << "✅ AXIOM Daemon started successfully\n";
+    std::cout << "AXIOM Daemon started successfully\n";
     std::cout << "🚀 Enterprise mode: HIGH-PERFORMANCE PERSISTENT COMPUTING\n";
     std::cout << "📊 Memory pools: NUMA-optimized allocation\n";
     std::cout << "⚡ Symbolic engine: SymEngine integration active\n\n";
@@ -335,6 +336,127 @@ int run_benchmark_mode() {
     return 0;
 }
 
+namespace {
+AXIOM::CalculationMode parse_mode(const std::string& raw_mode) {
+    std::string mode = raw_mode;
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+
+    if (mode == "linear" || mode == "linear_system" || mode == "linear-system") {
+        return AXIOM::CalculationMode::LINEAR_SYSTEM;
+    }
+    if (mode == "statistics" || mode == "stats") {
+        return AXIOM::CalculationMode::STATISTICS;
+    }
+    if (mode == "symbolic" || mode == "sym") {
+        return AXIOM::CalculationMode::SYMBOLIC;
+    }
+    if (mode == "units" || mode == "unit") {
+        return AXIOM::CalculationMode::UNITS;
+    }
+    if (mode == "plot" || mode == "plotting") {
+        return AXIOM::CalculationMode::PLOT;
+    }
+    return AXIOM::CalculationMode::ALGEBRAIC;
+}
+
+std::string format_error(const EngineErrorResult& err) {
+    if (std::holds_alternative<CalcErr>(err)) {
+        switch (std::get<CalcErr>(err)) {
+            case CalcErr::DivideByZero: return "Divide by zero";
+            case CalcErr::IndeterminateResult: return "Indeterminate result";
+            case CalcErr::OperationNotFound: return "Operation not found";
+            case CalcErr::ArgumentMismatch: return "Argument mismatch";
+            case CalcErr::NegativeRoot: return "Negative root";
+            case CalcErr::DomainError: return "Domain error";
+            case CalcErr::ParseError: return "Parse error";
+            case CalcErr::NumericOverflow: return "Numeric overflow";
+            case CalcErr::StackOverflow: return "Stack overflow";
+            case CalcErr::MemoryExhausted: return "Memory exhausted";
+            case CalcErr::InfiniteLoop: return "Infinite loop";
+            case CalcErr::None: default: return "Unknown calculation error";
+        }
+    }
+
+    if (std::holds_alternative<LinAlgErr>(err)) {
+        switch (std::get<LinAlgErr>(err)) {
+            case LinAlgErr::NoSolution: return "No solution";
+            case LinAlgErr::InfiniteSolutions: return "Infinite solutions";
+            case LinAlgErr::MatrixMismatch: return "Matrix size mismatch";
+            case LinAlgErr::ParseError: return "Parse error";
+            case LinAlgErr::None: default: return "Unknown linear algebra error";
+        }
+    }
+
+    return "Unknown error";
+}
+
+int print_result(const EngineResult& result, AXIOM::CalculationMode mode) {
+    if (!result.result.has_value()) {
+        if (result.error.has_value()) {
+            std::cerr << "Error: " << format_error(result.error.value()) << "\n";
+        } else {
+            std::cerr << "Error: Unknown failure" << "\n";
+        }
+        return 1;
+    }
+
+    const auto& value = result.result.value();
+
+    if (std::holds_alternative<double>(value)) {
+        printf("%.15g\n", std::get<double>(value));
+        return 0;
+    }
+
+    if (std::holds_alternative<std::complex<double>>(value)) {
+        const auto& c = std::get<std::complex<double>>(value);
+        printf("%.15g%+.15gi\n", c.real(), c.imag());
+        return 0;
+    }
+
+    if (std::holds_alternative<AXIOM::Number>(value)) {
+        auto c = AXIOM::GetComplex(std::get<AXIOM::Number>(value));
+        printf("%.15g%+.15gi\n", c.real(), c.imag());
+        return 0;
+    }
+
+    if (std::holds_alternative<Vector>(value)) {
+        const auto& vec = std::get<Vector>(value);
+        if (mode == AXIOM::CalculationMode::LINEAR_SYSTEM) {
+            for (size_t i = 0; i < vec.size(); ++i) {
+                printf("x%zu = %.15g\n", i, vec[i]);
+            }
+        } else {
+            printf("[");
+            for (size_t i = 0; i < vec.size(); ++i) {
+                printf("%.15g%s", vec[i], (i + 1 < vec.size()) ? ", " : "");
+            }
+            printf("]\n");
+        }
+        return 0;
+    }
+
+    if (std::holds_alternative<Matrix>(value)) {
+        const auto& mat = std::get<Matrix>(value);
+        for (const auto& row : mat) {
+            printf("[");
+            for (size_t i = 0; i < row.size(); ++i) {
+                printf("%.15g%s", row[i], (i + 1 < row.size()) ? ", " : "");
+            }
+            printf("]\n");
+        }
+        return 0;
+    }
+
+    if (std::holds_alternative<std::string>(value)) {
+        std::cout << std::get<std::string>(value) << "\n";
+        return 0;
+    }
+
+    std::cerr << "Error: Unsupported result type" << "\n";
+    return 1;
+}
+} // namespace
+
 int main(int argc, char* argv[]) {
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) {
@@ -349,6 +471,40 @@ int main(int argc, char* argv[]) {
     if (std::find(args.begin(), args.end(), "--help") != args.end() ||
         std::find(args.begin(), args.end(), "-h") != args.end()) {
         print_help();
+        return 0;
+    }
+    
+    // Check for interactive mode (persistent subprocess for GUI)
+    if (std::find(args.begin(), args.end(), "--interactive") != args.end()) {
+        // Initialize calculation engine once
+        auto calc = std::make_unique<AXIOM::DynamicCalc>();
+        AXIOM::CalculationMode current_mode = AXIOM::CalculationMode::ALGEBRAIC;
+        
+        std::string line;
+        while (std::getline(std::cin, line)) {
+            if (line.empty()) continue;
+            
+            // Handle mode changes (e.g., ":mode linear")
+            if (line.rfind(":mode ", 0) == 0) {
+                std::string mode_str = line.substr(6);
+                // Remove trailing whitespace/newlines
+                mode_str.erase(std::remove_if(mode_str.begin(), mode_str.end(), 
+                    [](char c) { return std::isspace(static_cast<unsigned char>(c)); }), mode_str.end());
+                current_mode = parse_mode(mode_str);
+                std::cout << "Mode changed\n" << std::flush;
+                continue;
+            }
+            
+            // Execute command
+            try {
+                auto basic_result = calc->calculate(line, current_mode);
+                print_result(basic_result, current_mode);
+                std::cout << "__END__\n" << std::flush;
+            } catch (const std::exception& e) {
+                std::cerr << "Error: " << e.what() << "\n";
+                std::cout << "__END__\n" << std::flush;
+            }
+        }
         return 0;
     }
     
@@ -373,39 +529,48 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    // Check for TUI mode
-    if (std::find(args.begin(), args.end(), "--tui") != args.end()) {
-#ifdef ENABLE_FTXUI
-        return run_ftxui_interface();
-#else
-        std::cout << "FTXUI not available. Using interactive mode.\n";
-        return run_interactive_mode();
-#endif
-    }
-    
     // Check for benchmark mode
     if (std::find(args.begin(), args.end(), "--benchmark") != args.end()) {
         return run_benchmark_mode();
     }
     
-    // Command line execution
+    // Command line execution with mode support
     if (!args.empty()) {
-        std::string expression = args[0];
-        auto calc = std::make_unique<AXIOM::DynamicCalc>();
-        
-        try {
-            auto basic_result = calc->calculate(expression, AXIOM::CalculationMode::ALGEBRAIC);
-            auto result = AXIOM::ExtendedEngineResult::from_engine_result(basic_result);
-            
-            if (result.success) {
-                // Output with proper precision, removing trailing zeros
-                printf("%.15g", result.value);
-                printf("\n");
-                return 0;
-            } else {
-                std::cerr << "Error: " << result.error_message << "\n";
-                return 1;
+        AXIOM::CalculationMode mode = AXIOM::CalculationMode::ALGEBRAIC;
+        std::string expression;
+
+        for (size_t i = 0; i < args.size(); ++i) {
+            const auto& arg = args[i];
+            if (arg.rfind("--mode=", 0) == 0) {
+                mode = parse_mode(arg.substr(7));
+                continue;
             }
+            if (arg == "--mode" && i + 1 < args.size()) {
+                mode = parse_mode(args[i + 1]);
+                ++i;
+                continue;
+            }
+            if (arg == "--linear") { mode = AXIOM::CalculationMode::LINEAR_SYSTEM; continue; }
+            if (arg == "--statistics" || arg == "--stats") { mode = AXIOM::CalculationMode::STATISTICS; continue; }
+            if (arg == "--symbolic") { mode = AXIOM::CalculationMode::SYMBOLIC; continue; }
+            if (arg == "--units") { mode = AXIOM::CalculationMode::UNITS; continue; }
+            if (arg == "--plot") { mode = AXIOM::CalculationMode::PLOT; continue; }
+
+            if (!expression.empty()) {
+                expression += " ";
+            }
+            expression += arg;
+        }
+
+        if (expression.empty()) {
+            std::cerr << "Error: No expression provided\n";
+            return 1;
+        }
+
+        auto calc = std::make_unique<AXIOM::DynamicCalc>();
+        try {
+            auto basic_result = calc->calculate(expression, mode);
+            return print_result(basic_result, mode);
         } catch (const std::exception& e) {
             std::cerr << "Error: " << e.what() << "\n";
             return 1;

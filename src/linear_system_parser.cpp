@@ -1,9 +1,8 @@
 #include "linear_system_parser.h"
 #include "string_helpers.h" // Ensure StringHelpers.h exists
-// EigenEngine integration for advanced linear algebra
-// #ifdef ENABLE_EIGEN
-// #include "../core/engine/eigen_engine.h"
-// #endif
+#ifdef ENABLE_EIGEN
+#include "eigen_engine.h"
+#endif
 #include <cmath>
 #include <algorithm>
 #include <sstream>
@@ -151,6 +150,11 @@ void LinearSystemParser::RegisterCommands()
                                  [this](const std::string &s)
                                  { return HandleCramer(s); },
                                  "Solves system using Cramer's Rule"});
+
+    command_registry_.push_back({"solve",
+                                 [this](const std::string &s)
+                                 { return HandleSolve(s); },
+                                 "Solves linear system Ax=b"});
 }
 
 EngineResult LinearSystemParser::ParseAndExecute(const std::string &input)
@@ -189,7 +193,7 @@ EngineResult LinearSystemParser::HandleQR(const std::string &input)
     if (Q.empty())
         return {{}, {LinAlgErr::NoSolution}};
 
-    return {EngineSuccessResult(Q), {}};
+    return EngineSuccessResult(Q);
 }
 
 EngineResult LinearSystemParser::HandleEigen(const std::string &input)
@@ -212,7 +216,7 @@ EngineResult LinearSystemParser::HandleEigen(const std::string &input)
 
     auto [eigenValues, eigenVectors] = ComputeEigenvalues(A, 100);
 
-    return {EngineSuccessResult(Vector(eigenValues)), {}};
+    return EngineSuccessResult(Vector(eigenValues));
 }
 
 EngineResult LinearSystemParser::HandleCramer(const std::string &input)
@@ -231,6 +235,76 @@ EngineResult LinearSystemParser::HandleCramer(const std::string &input)
         return {solution.value(), {}};
     else
         return {{}, {LinAlgErr::NoSolution}};
+}
+
+EngineResult LinearSystemParser::HandleSolve(const std::string &input)
+{
+    // Accept forms:
+    //   solve([a,b;c,d],[v;w])
+    //   solve([[a,b],[c,d]],[[v],[w]])
+    //   solve([a,b;c,d], [v, w])
+    std::string content = input.substr(5);  // Skip "solve"
+
+    // Remove spaces for simpler scanning
+    std::string processed;
+    for (char c : content) { if (c != ' ') processed += c; }
+
+    auto extract_bracket_block = [](const std::string& s, size_t start_pos) -> std::pair<std::string, size_t> {
+        size_t start = s.find('[', start_pos);
+        if (start == std::string::npos) return {"", std::string::npos};
+        int depth = 0;
+        for (size_t i = start; i < s.size(); ++i) {
+            if (s[i] == '[') depth++;
+            else if (s[i] == ']') {
+                depth--;
+                if (depth == 0) {
+                    return {s.substr(start, i - start + 1), i + 1};
+                }
+            }
+        }
+        return {"", std::string::npos};
+    };
+
+    auto [matrix_str, after_matrix] = extract_bracket_block(processed, 0);
+    if (matrix_str.empty() || after_matrix == std::string::npos) {
+        return {{}, {LinAlgErr::ParseError}};
+    }
+
+    auto [vec_str, _after_vec] = extract_bracket_block(processed, after_matrix);
+    if (vec_str.empty()) {
+        return {{}, {LinAlgErr::ParseError}};
+    }
+
+    Matrix A = ParseMatrixString(matrix_str);
+    if (A.empty() || A[0].empty()) {
+        return {{}, {LinAlgErr::ParseError}};
+    }
+
+    Matrix b_matrix = ParseMatrixString(vec_str);
+    if (b_matrix.empty() || b_matrix[0].empty()) {
+        return {{}, {LinAlgErr::ParseError}};
+    }
+
+    // Flatten to 1D vector
+    std::vector<double> b;
+    if (b_matrix.size() == 1) {
+        b = b_matrix[0];
+    } else if (b_matrix[0].size() == 1) {
+        for (const auto& row : b_matrix) b.push_back(row[0]);
+    } else {
+        return {{}, {LinAlgErr::ParseError}};
+    }
+
+    if (A.size() != A[0].size() || A.size() != b.size()) {
+        return {{}, {LinAlgErr::MatrixMismatch}};
+    }
+
+    LinAlgResult lin_res = solve_linear_system(A, b);
+    if (lin_res.err == LinAlgErr::None && lin_res.solution.has_value()) {
+        return {lin_res.solution.value(), {}};
+    } else {
+        return {{}, {lin_res.err}};
+    }
 }
 
 EngineResult LinearSystemParser::HandleDefaultSolve(const std::string &input)
@@ -252,8 +326,7 @@ EngineResult LinearSystemParser::HandleDefaultSolve(const std::string &input)
 
 Matrix LinearSystemParser::MultiplyMatrices(const Matrix &A, const Matrix &B)
 {
-    // AXIOM v3.1: EigenEngine integration available when Eigen is installed
-    // TODO: Enable when Eigen3 is available
+    // AXIOM v3.1: Eigen integration disabled - type mismatch (Eigen::Matrix vs std::vector)
     // #ifdef ENABLE_EIGEN
     //     static AXIOM::EigenEngine eigen_engine;
     //     return eigen_engine.MatrixMultiply(A, B);
@@ -289,7 +362,6 @@ Matrix LinearSystemParser::MultiplyMatrices(const Matrix &A, const Matrix &B)
     }
     
     return C;
-    // #endif
 }
 
 Matrix LinearSystemParser::CreateIdentityMatrix(int n)
@@ -430,8 +502,7 @@ bool LinearSystemParser::ParseLinearSystem(const std::string &input, std::vector
 
 double LinearSystemParser::DotProduct(const std::vector<double> &v1, const std::vector<double> &v2)
 {
-    // AXIOM v3.1: EigenEngine integration available when Eigen is installed
-    // TODO: Enable when Eigen3 is available
+    // AXIOM v3.1: Eigen integration disabled - type mismatch
     // #ifdef ENABLE_EIGEN
     //     static AXIOM::EigenEngine eigen_engine;
     //     return eigen_engine.DotProduct(v1, v2);
@@ -455,7 +526,6 @@ double LinearSystemParser::DotProduct(const std::vector<double> &v1, const std::
     }
     
     return sum;
-    // #endif
 }
 
 double LinearSystemParser::VectorNorm(const std::vector<double> &v)
@@ -503,8 +573,7 @@ Matrix LinearSystemParser::GetMinor(const Matrix &A, int row, int col)
 
 double LinearSystemParser::Determinant(const Matrix &A)
 {
-    // AXIOM v3.1: EigenEngine integration available when Eigen is installed
-    // TODO: Enable when Eigen3 is available
+    // AXIOM v3.1: Eigen integration disabled - type mismatch
     // #ifdef ENABLE_EIGEN
     //     static AXIOM::EigenEngine eigen_engine;
     //     return eigen_engine.Determinant(A);
@@ -548,7 +617,6 @@ double LinearSystemParser::Determinant(const Matrix &A)
     }
     
     return std::abs(det) < 1e-9 ? 0.0 : det; // Final numerical stability check
-    // #endif
 }
 
 Matrix LinearSystemParser::Transpose(const Matrix &A)
@@ -568,8 +636,7 @@ Matrix LinearSystemParser::Transpose(const Matrix &A)
 
 std::pair<Matrix, Matrix> LinearSystemParser::GramSchmidt(const Matrix &A)
 {
-    // AXIOM v3.1: EigenEngine integration available when Eigen is installed
-    // TODO: Enable when Eigen3 is available
+    // AXIOM v3.1: Eigen integration disabled - type mismatch
     // #ifdef ENABLE_EIGEN
     //     static AXIOM::EigenEngine eigen_engine;
     //     auto [Q, R] = eigen_engine.QRDecomposition(A);
@@ -597,7 +664,6 @@ std::pair<Matrix, Matrix> LinearSystemParser::GramSchmidt(const Matrix &A)
     }
     Matrix Q = Transpose(Q_cols);
     return {Q, R};
-    // #endif
 }
 
 LinAlgResult LinearSystemParser::solve_linear_system(const std::vector<std::vector<double>> &A, const std::vector<double> &b)

@@ -29,7 +29,7 @@ SelectiveDispatcher::SelectiveDispatcher()
     try {
         eigen_engine_ = std::make_unique<EigenEngine>();
         engine_availability_[ComputeEngine::Eigen] = true;
-        std::cout << "✅ Eigen engine available" << std::endl;
+        std::cout << "Eigen engine available" << std::endl;
     } catch (const std::exception& e) {
         engine_availability_[ComputeEngine::Eigen] = false;
         std::cerr << "❌ Eigen engine unavailable: " << e.what() << std::endl;
@@ -38,22 +38,21 @@ SelectiveDispatcher::SelectiveDispatcher()
     engine_availability_[ComputeEngine::Eigen] = false;
 #endif
 
-// Temporarily disabled until nanobind headers are resolved
-//#ifdef ENABLE_NANOBIND
-//    try {
-//        nanobind_interface_ = std::make_unique<NanobindInterface>();
-//        engine_availability_[ComputeEngine::Python] = true;
-//        std::cout << "✅ Python engine available" << std::endl;
-//    } catch (const std::exception& e) {
-//        engine_availability_[ComputeEngine::Python] = false;
-//        std::cerr << "❌ Python engine unavailable: " << e.what() << std::endl;
-//    }
-//#else
+#ifdef ENABLE_NANOBIND
+    try {
+        nanobind_interface_ = std::make_unique<NanobindInterface>();
+        engine_availability_[ComputeEngine::Python] = true;
+        std::cout << "Python engine available" << std::endl;
+    } catch (const std::exception& e) {
+        engine_availability_[ComputeEngine::Python] = false;
+        std::cerr << "❌ Python engine unavailable: " << e.what() << std::endl;
+    }
+#else
     engine_availability_[ComputeEngine::Python] = false;
-//#endif
+#endif
 
-    std::cout << "🎯 SelectiveDispatcher initialized with intelligent routing!" << std::endl;
-    std::cout << "   Available engines: " << GetAvailableEngines().size() << std::endl;
+    // SelectiveDispatcher initialized with intelligent routing
+    // Available engines: configured
 }
 
 EngineResult SelectiveDispatcher::DispatchOperation(const std::string& operation, 
@@ -329,36 +328,29 @@ EngineResult SelectiveDispatcher::DispatchToEigen(const std::string& operation,
 }
 #endif
 
-// Temporarily disabled until nanobind headers are resolved
-//#ifdef ENABLE_NANOBIND
-//EngineResult SelectiveDispatcher::DispatchToPython(const std::string& operation, 
-//                                                  const std::vector<std::string>& args) {
-//    if (!nanobind_interface_) {
-//        return {{}, {CalcErr::OperationNotFound}};
-//    }
-//    
-//    try {
-//        // Execute Python code for symbolic operations
-//        if (operation.find("symbolic") != std::string::npos) {
-//            auto result = nanobind_interface_->ExecutePythonCode(operation);
-//            // Convert Python result to EngineResult (simplified)
-//            return {{std::string("Python result")}, {}};
-//        }
-//        
-//        // For other operations, fallback to native
-//        return DispatchToNative(operation, args);
-//        
-//    } catch (const std::exception& e) {
-//        return {{}, {CalcErr::OperationNotFound}};
-//    }
-//}
-//#endif
-
-// Stub function for when nanobind is disabled
+#ifdef ENABLE_NANOBIND
 EngineResult SelectiveDispatcher::DispatchToPython(const std::string& operation, 
                                                   const std::vector<std::string>& args) {
-    return {{}, {CalcErr::OperationNotFound}};
+    if (!nanobind_interface_) {
+        return {{}, {CalcErr::OperationNotFound}};
+    }
+    
+    try {
+        // Execute Python code for symbolic operations
+        if (operation.find("symbolic") != std::string::npos) {
+            auto result = nanobind_interface_->ExecutePythonCode(operation);
+            // Convert Python result to EngineResult (simplified)
+            return {{std::string("Python result")}, {}};
+        }
+        
+        // For other operations, fallback to native
+        return DispatchToNative(operation, args);
+        
+    } catch (const std::exception& e) {
+        return {{}, {CalcErr::OperationNotFound}};
+    }
 }
+#endif
 
 bool SelectiveDispatcher::IsEngineAvailable(ComputeEngine engine) const {
     auto it = engine_availability_.find(engine);
@@ -433,7 +425,7 @@ std::string SelectiveDispatcher::GetPerformanceReport() const {
     
     // Performance classification
     if (last_metrics_.execution_time_ms < 1.0) {
-        ss << "  🏎️ SENNA SPEED: Lightning Fast! (<1ms)\n";
+        ss << "  SENNA SPEED: Lightning Fast! (<1ms)\n";
     } else if (last_metrics_.execution_time_ms < 10.0) {
         ss << "  🏁 FORMULA 1 Speed: Very Fast! (<10ms)\n";
     } else if (last_metrics_.execution_time_ms < 100.0) {
@@ -529,7 +521,7 @@ void DispatchTimer::Stop() {
     if (!stopped_) {
         auto elapsed_ms = GetElapsedMs();
         if (elapsed_ms < 1.0) {
-            std::cout << "🏎️ " << operation_name_ << ": " << elapsed_ms << "ms (Senna Speed!)" << std::endl;
+            // Operation timing: suppressed for performance
         }
         stopped_ = true;
     }
@@ -575,20 +567,20 @@ namespace Dispatch {
         g_dispatcher->EnableFallback(true);
         g_dispatcher->SetPerformanceThreshold(1.0);  // 1ms threshold for Senna speed
         
-        std::cout << "🏎️ Dispatcher optimized for Senna Speed!" << std::endl;
+        // Dispatcher optimized for Senna Speed
     }
     
     void Initialize() {
         if (!g_dispatcher) {
             g_dispatcher = std::make_unique<SelectiveDispatcher>();
-            std::cout << "🎯 Selective Dispatcher initialized!" << std::endl;
+            // Selective Dispatcher initialized
         }
     }
     
     void Shutdown() {
         if (g_dispatcher) {
             g_dispatcher.reset();
-            std::cout << "🔄 Selective Dispatcher shutdown complete." << std::endl;
+            // Selective Dispatcher shutdown complete
         }
     }
     

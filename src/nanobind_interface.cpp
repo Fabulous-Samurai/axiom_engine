@@ -41,8 +41,8 @@ void NanobindInterface::Initialize() {
     RegisterEigenMethods();
 #endif
     
-    std::cout << "   ✅ Python interpreter ready" << std::endl;
-    std::cout << "   ✅ Zero-copy conversions enabled" << std::endl;
+    std::cout << "   Python interpreter ready" << std::endl;
+    std::cout << "   Zero-copy conversions enabled" << std::endl;
 }
 
 void NanobindInterface::RegisterMethods() {
@@ -254,7 +254,7 @@ std::string NanobindInterface::GetPerformanceReport() const {
     
     // Performance classification
     if (metrics_.call_overhead_us < 10.0) {
-        ss << "   🏎️ SENNA SPEED: Ultra-fast interop! (<10μs)\n";
+        ss << "   SENNA SPEED: Ultra-fast interop! (<10μs)\n";
     } else if (metrics_.call_overhead_us < 100.0) {
         ss << "   🏁 Fast interop (<100μs)\n";
     } else {
@@ -366,7 +366,7 @@ namespace Nanobind {
             g_nanobind_interface = std::make_unique<NanobindInterface>();
         }
         
-        std::cout << "🏎️ Nanobind interface optimized for Senna speed!" << std::endl;
+        std::cout << "Nanobind interface optimized for Senna speed!" << std::endl;
     }
     
     // Explicit template instantiations

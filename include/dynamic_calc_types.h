@@ -170,7 +170,7 @@ struct EngineResult
 // Enhanced factory functions for AXIOM::Number support
 inline EngineResult CreateSuccessResult(double value) {
     EngineResult res;
-    res.result = AXIOM::Number(value);
+    res.result = value;  // Store plain double for legacy expectations
     return res;
 }
 
@@ -182,7 +182,12 @@ inline EngineResult CreateSuccessResult(const std::complex<double>& value) {
 
 inline EngineResult CreateSuccessResult(const AXIOM::Number& value) {
     EngineResult res;
-    res.result = value;
+    // Preserve complex values, but normalize real Numbers to plain double for callers
+    if (AXIOM::IsComplex(value)) {
+        res.result = AXIOM::GetComplex(value);
+    } else {
+        res.result = AXIOM::GetReal(value);
+    }
     return res;
 }
 
@@ -190,7 +195,7 @@ inline EngineResult CreateSuccessResult(const AXIOM::Number& value) {
 
 // Legacy compatibility aliases - these maintain backward compatibility
 using EngineSuccessResult_Legacy = EngineResult;
-inline EngineResult EngineSuccessResult(double value) { return CreateSuccessResult(AXIOM::Number(value)); }
+inline EngineResult EngineSuccessResult(double value) { return CreateSuccessResult(value); }
 inline EngineResult EngineSuccessResult(const Vector& value) { EngineResult res; res.result = value; return res; }
 inline EngineResult EngineSuccessResult(const Matrix& value) { EngineResult res; res.result = value; return res; }
 inline EngineResult EngineSuccessResult(const std::string& value) { EngineResult res; res.result = value; return res; }

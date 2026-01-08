@@ -13,6 +13,12 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import time
 
+# Constants for default function strings
+DEFAULT_SURFACE_FUNC = "sin(sqrt(x**2 + y**2))"
+DEFAULT_PARAMETRIC_X = "cos(t)"
+DEFAULT_PARAMETRIC_Y = "sin(t)"
+DEFAULT_PARAMETRIC_Z = "t"
+
 class Advanced3DVisualization:
     """🎯 Advanced 3D Visualization Suite 🎯"""
     
@@ -20,7 +26,7 @@ class Advanced3DVisualization:
         self.figures = []
         self.animations = []
     
-    def surface_plot_3d(self, func_str="sin(sqrt(x**2 + y**2))", 
+    def surface_plot_3d(self, func_str=DEFAULT_SURFACE_FUNC, 
                        x_range=(-5, 5), y_range=(-5, 5), 
                        resolution=50, title="3D Surface"):
         """Create advanced 3D surface plot"""
@@ -90,7 +96,7 @@ class Advanced3DVisualization:
             print(f"❌ 3D Surface plot error: {str(e)}")
             return None, None
     
-    def parametric_3d_plot(self, x_func="cos(t)", y_func="sin(t)", z_func="t", 
+    def parametric_3d_plot(self, x_func=DEFAULT_PARAMETRIC_X, y_func=DEFAULT_PARAMETRIC_Y, z_func=DEFAULT_PARAMETRIC_Z, 
                           t_range=(0, 4*np.pi), resolution=1000, title="Parametric Curve"):
         """Create parametric 3D curve"""
         try:
@@ -114,7 +120,7 @@ class Advanced3DVisualization:
             ax = fig.add_subplot(111, projection='3d')
             
             # Plot parametric curve with color gradient
-            line = ax.plot(x, y, z, linewidth=3, alpha=0.8)
+            _ = ax.plot(x, y, z, linewidth=3, alpha=0.8)
             
             # Add starting and ending points
             ax.scatter([x[0]], [y[0]], [z[0]], color='green', s=100, label='Start')
@@ -196,11 +202,11 @@ class Advanced3DVisualization:
                 'x': X, 'y': Y, 't': t
             }
             
-            Z_base = eval(base_func, {"__builtins__": {}}, safe_dict)
+            z_base = eval(base_func, {"__builtins__": {}}, safe_dict)
             time_mod = eval(time_modulation, {"__builtins__": {}}, safe_dict)
-            Z = Z_base * time_mod
+            Z = z_base * time_mod
             
-            surface = ax.plot_surface(X, Y, Z, cmap='viridis', alpha=0.8)
+            _ = ax.plot_surface(X, Y, Z, cmap='viridis', alpha=0.8)
             ax.set_title(f'Animated Surface: {base_func} * {time_modulation}')
             ax.set_xlabel('X')
             ax.set_ylabel('Y')
@@ -213,9 +219,9 @@ class Advanced3DVisualization:
                 t = frame * 0.1
                 safe_dict['t'] = t
                 
-                Z_base = eval(base_func, {"__builtins__": {}}, safe_dict)
+                z_base = eval(base_func, {"__builtins__": {}}, safe_dict)
                 time_mod = eval(time_modulation, {"__builtins__": {}}, safe_dict)
-                Z = Z_base * time_mod
+                Z = z_base * time_mod
                 
                 surface = ax.plot_surface(X, Y, Z, cmap='viridis', alpha=0.8)
                 ax.set_title(f'Animated Surface: {base_func} * {time_modulation} (t={t:.1f})')
@@ -280,7 +286,7 @@ class Advanced3DVisualization:
                 
                 # Hydrogen atoms in tetrahedral arrangement
                 bond_length = 1.1
-                tet_angle = 109.47 * np.pi / 180  # Tetrahedral angle
+                # Tetrahedral angle = 109.47° (for reference)
                 
                 # Tetrahedral coordinates
                 h_coords = [

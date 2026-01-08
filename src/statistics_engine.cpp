@@ -10,7 +10,7 @@ EngineResult StatisticsEngine::Mean(const Vector& data) {
         if (!std::isfinite(val)) return {{}, {CalcErr::DomainError}};
         sum += val;
     }
-    return {EngineSuccessResult(sum / data.size()), {}};
+    return EngineSuccessResult(sum / data.size());
 }
 
 EngineResult StatisticsEngine::Median(Vector data) {
@@ -20,9 +20,9 @@ EngineResult StatisticsEngine::Median(Vector data) {
     size_t n = data.size();
     
     if (n % 2 == 0) {
-        return {EngineSuccessResult((data[n/2-1] + data[n/2]) / 2.0), {}};
+        return EngineSuccessResult((data[n/2-1] + data[n/2]) / 2.0);
     } else {
-        return {EngineSuccessResult(data[n/2]), {}};
+        return EngineSuccessResult(data[n/2]);
     }
 }
 
@@ -43,7 +43,7 @@ EngineResult StatisticsEngine::Mode(const Vector& data) {
         }
     }
     
-    return {EngineSuccessResult(mode_val), {}};
+    return EngineSuccessResult(mode_val);
 }
 
 EngineResult StatisticsEngine::Variance(const Vector& data) {
@@ -51,8 +51,12 @@ EngineResult StatisticsEngine::Variance(const Vector& data) {
     
     auto mean_result = Mean(data);
     if (!mean_result.result.has_value()) return mean_result;
-    
-    double mean_val = std::get<double>(*mean_result.result);
+
+    // Use the EngineResult helper to extract a double regardless of underlying variant
+    auto mean_val_opt = mean_result.GetDouble();
+    if (!mean_val_opt.has_value()) return {{}, {CalcErr::ArgumentMismatch}};
+    double mean_val = *mean_val_opt;
+
     double sum_sq_diff = 0.0;
     
     for (double val : data) {
@@ -60,7 +64,7 @@ EngineResult StatisticsEngine::Variance(const Vector& data) {
         sum_sq_diff += diff * diff;
     }
     
-    return {EngineSuccessResult(sum_sq_diff / (data.size() - 1)), {}};
+    return EngineSuccessResult(sum_sq_diff / (data.size() - 1));
 }
 
 EngineResult StatisticsEngine::StandardDeviation(const Vector& data) {
@@ -68,7 +72,7 @@ EngineResult StatisticsEngine::StandardDeviation(const Vector& data) {
     if (!var_result.result.has_value()) return var_result;
     
     double variance = std::get<double>(*var_result.result);
-    return {EngineSuccessResult(std::sqrt(variance)), {}};
+    return EngineSuccessResult(std::sqrt(variance));
 }
 
 EngineResult StatisticsEngine::Correlation(const Vector& x, const Vector& y) {
@@ -98,7 +102,7 @@ EngineResult StatisticsEngine::Correlation(const Vector& x, const Vector& y) {
     double denominator = std::sqrt(sum_x_sq * sum_y_sq);
     if (denominator == 0.0) return {{}, {CalcErr::DivideByZero}};
     
-    return {EngineSuccessResult(numerator / denominator), {}};
+    return EngineSuccessResult(numerator / denominator);
 }
 
 EngineResult StatisticsEngine::LinearRegression(const Vector& x, const Vector& y) {
@@ -129,7 +133,7 @@ EngineResult StatisticsEngine::LinearRegression(const Vector& x, const Vector& y
     double intercept = y_mean - slope * x_mean;
     
     // Return [slope, intercept]
-    return {EngineSuccessResult(Vector{slope, intercept}), {}};
+    return EngineSuccessResult(Vector{slope, intercept});
 }
 
 EngineResult StatisticsEngine::Percentile(Vector data, double p) {
@@ -139,21 +143,21 @@ EngineResult StatisticsEngine::Percentile(Vector data, double p) {
     
     std::sort(data.begin(), data.end());
     
-    if (p == 0) return {EngineSuccessResult(data[0]), {}};
-    if (p == 100) return {EngineSuccessResult(data.back()), {}};
+    if (p == 0) return EngineSuccessResult(data[0]);
+    if (p == 100) return EngineSuccessResult(data.back());
     
     double index = (p / 100.0) * (data.size() - 1);
     size_t lower = static_cast<size_t>(index);
     size_t upper = lower + 1;
     
     if (upper >= data.size()) {
-        return {EngineSuccessResult(data.back()), {}};
+        return EngineSuccessResult(data.back());
     }
     
     double weight = index - lower;
     double result = data[lower] * (1.0 - weight) + data[upper] * weight;
     
-    return {EngineSuccessResult(result), {}};
+    return EngineSuccessResult(result);
 }
 
 EngineResult StatisticsEngine::MovingAverage(const Vector& data, int window_size) {
@@ -172,5 +176,5 @@ EngineResult StatisticsEngine::MovingAverage(const Vector& data, int window_size
         result.push_back(sum / window_size);
     }
     
-    return {EngineSuccessResult(result), {}};
+    return EngineSuccessResult(result);
 }

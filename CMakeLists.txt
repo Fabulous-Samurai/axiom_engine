@@ -9,6 +9,10 @@ project(axiom_engine VERSION 3.0.0)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Auto-install optional Python GUI dependencies via pip
+option(AXIOM_AUTO_INSTALL_PYTHON_DEPS "Install optional Python GUI dependencies via pip" ON)
+set(AXIOM_PY_REQUIREMENTS "${CMAKE_SOURCE_DIR}/requirements-optional.txt")
+
 # Enable position independent code for nanobind
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -49,13 +53,40 @@ find_package(Python COMPONENTS Interpreter Development REQUIRED)
 if(Python_FOUND)
     message(STATUS "Python found: ${Python_VERSION}")
     set(ENABLE_PYTHON_FFI ON)
+    # Optionally install Python GUI deps automatically (numpy/scipy/matplotlib/pandas/sympy)
+    # Skip auto-install if not running inside a virtual environment to avoid PEP 668 errors
+    if(AXIOM_AUTO_INSTALL_PYTHON_DEPS AND EXISTS ${AXIOM_PY_REQUIREMENTS})
+        if(DEFINED ENV{VIRTUAL_ENV})
+            add_custom_target(python_deps ALL
+                COMMAND "${Python_EXECUTABLE}" -m pip install -r "${AXIOM_PY_REQUIREMENTS}"
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                COMMENT "Installing optional Python GUI dependencies from requirements-optional.txt (venv detected)"
+                VERBATIM
+            )
+        else()
+            message(WARNING "Skipping auto Python deps install: no virtualenv detected (to avoid PEP 668 in MSYS-managed Python). Use your venv's pip manually.")
+        endif()
+    endif()
     
-    # Find Eigen for high-performance linear algebra
+    # Eigen3 for high-performance linear algebra - auto-download via FetchContent
+    include(FetchContent)
     find_package(Eigen3 QUIET)
     if(Eigen3_FOUND)
         message(STATUS "Eigen3 found: ${Eigen3_VERSION}")
     else()
-        message(WARNING "Eigen3 not found - some optimizations will be disabled")
+        message(STATUS "Eigen3 not found - downloading via FetchContent...")
+        FetchContent_Declare(
+            Eigen3
+            GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+            GIT_TAG 3.4.0
+            GIT_SHALLOW TRUE
+            GIT_PROGRESS TRUE
+        )
+        set(EIGEN_BUILD_DOC OFF CACHE BOOL "Build Eigen documentation" FORCE)
+        set(BUILD_TESTING OFF CACHE BOOL "Build Eigen tests" FORCE)
+        set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "Build Eigen pkg-config" FORCE)
+        FetchContent_MakeAvailable(Eigen3)
+        message(STATUS "Eigen3 downloaded and configured")
     endif()
     
     # Try to find nanobind
@@ -66,7 +97,6 @@ if(Python_FOUND)
         message(STATUS "Nanobind found and enabled")
     else()
         # If not found, try to use FetchContent to download it
-        include(FetchContent)
         message(STATUS "Nanobind not found - attempting to download via FetchContent...")
         FetchContent_Declare(
             nanobind
@@ -88,11 +118,10 @@ endif()
 
 string(TIMESTAMP BUILD_TIMESTAMP "%Y-%m-%d %H:%M:%S")
 configure_file(
-    "${CMAKE_SOURCE_DIR}/version.h.in"
+    "${CMAKE_SOURCE_DIR}/build/cmake/version.h.in"
     "${CMAKE_BINARY_DIR}/generated/version.h"
 )
 
-add_subdirectory(libs/FTXUI)
 find_package(Threads REQUIRED)
 
 
@@ -153,6 +182,8 @@ add_executable(axiom
         src/dynamic_calc.cpp
         src/algebraic_parser.cpp
         src/linear_system_parser.cpp
+    src/statistics_parser.cpp
+    src/symbolic_parser.cpp
         src/string_helpers.cpp
         src/unit_manager.cpp
         src/unit_parser.cpp
@@ -167,6 +198,8 @@ add_executable(axiom
         include/iParser.h
         include/algebraic_parser.h
         include/linear_system_parser.h
+    include/statistics_parser.h
+    include/symbolic_parser.h
         include/string_helpers.h
         include/unit_manager.h
         include/unit_parser.h
@@ -179,9 +212,6 @@ add_executable(axiom
 
 target_link_libraries(axiom 
     PRIVATE 
-    ftxui::screen 
-    ftxui::dom 
-    ftxui::component
     Threads::Threads
 )
 
@@ -235,6 +265,8 @@ add_executable(run_tests
         src/dynamic_calc.cpp
         src/algebraic_parser.cpp
         src/linear_system_parser.cpp
+    src/statistics_parser.cpp
+    src/symbolic_parser.cpp
         src/string_helpers.cpp
         src/unit_manager.cpp
         src/unit_parser.cpp
@@ -245,6 +277,8 @@ add_executable(run_tests
         
         include/dynamic_calc.h
         include/string_helpers.h
+    include/statistics_parser.h
+    include/symbolic_parser.h
         include/unit_manager.h
         include/unit_parser.h
         include/statistics_engine.h
@@ -255,9 +289,6 @@ add_executable(run_tests
 
 target_link_libraries(run_tests 
     PRIVATE 
-    ftxui::screen 
-    ftxui::dom 
-    ftxui::component
     Threads::Threads
 )
 
@@ -267,6 +298,61 @@ if(ENABLE_PYTHON_FFI)
     target_include_directories(run_tests PRIVATE ${Python_INCLUDE_DIRS})
 endif()
 
+
+# ============================================================================
+# GIGA TEST SUITE - Monolithic Production-Grade Test Suite
+# ============================================================================
+option(BUILD_GIGA_TESTS "Build comprehensive giga test suite" ON)
+if(BUILD_GIGA_TESTS)
+    message(STATUS "🧪 Configuring Giga Test Suite...")
+    
+    add_executable(giga_test_suite
+        tests/giga_test_suite.cpp
+        # Core sources needed for testing
+        src/algebraic_parser.cpp
+        src/linear_system_parser.cpp
+        src/statistics_engine.cpp
+        src/symbolic_engine.cpp
+        src/unit_manager.cpp
+        src/unit_parser.cpp
+        src/plot_engine.cpp
+        src/dynamic_calc.cpp
+        src/string_helpers.cpp
+        src/arena_allocator.cpp
+    )
+    
+    target_include_directories(giga_test_suite PRIVATE 
+        "${CMAKE_SOURCE_DIR}/include"
+        "${CMAKE_BINARY_DIR}/generated"
+    )
+    
+    target_link_libraries(giga_test_suite PRIVATE Threads::Threads)
+    
+    # Link Eigen if available
+    if(TARGET Eigen3::Eigen)
+        target_link_libraries(giga_test_suite PRIVATE Eigen3::Eigen)
+        target_compile_definitions(giga_test_suite PRIVATE ENABLE_EIGEN)
+        message(STATUS "  ✓ Linking Eigen3 to giga test suite")
+    endif()
+    
+    # Link OpenMP if available
+    if(OpenMP_CXX_FOUND)
+        target_link_libraries(giga_test_suite PRIVATE OpenMP::OpenMP_CXX)
+        target_compile_definitions(giga_test_suite PRIVATE ENABLE_OPENMP)
+        message(STATUS "  ✓ Linking OpenMP to giga test suite")
+    endif()
+    
+    # Add Eigen sources if enabled
+    if(TARGET Eigen3::Eigen)
+        target_sources(giga_test_suite PRIVATE
+            src/eigen_engine.cpp
+            src/cpu_optimization.cpp
+            core/dispatch/selective_dispatcher.cpp
+        )
+    endif()
+    
+    message(STATUS "🚀 Giga Test Suite configured successfully")
+endif()
 
 add_executable(ast_drills tests/ast_drills.cpp)
 target_include_directories(ast_drills PRIVATE "${CMAKE_SOURCE_DIR}/include")

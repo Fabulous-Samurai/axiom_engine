@@ -64,7 +64,7 @@ EngineResult UnitManager::ConvertUnit(double value, const std::string& from_unit
     double base_value = value * from_it->second.scale_factor;
     double result = base_value / to_it->second.scale_factor;
     
-    return {EngineSuccessResult(result), {}};
+    return EngineSuccessResult(result);
 }
 
 EngineResult UnitManager::ConvertTemperature(double value, const std::string& from_unit, const std::string& to_unit) {
@@ -92,7 +92,7 @@ EngineResult UnitManager::ConvertTemperature(double value, const std::string& fr
         return {{}, {CalcErr::OperationNotFound}};
     }
     
-    return {EngineSuccessResult(result), {}};
+    return EngineSuccessResult(result);
 }
 
 bool UnitManager::AreCompatible(const std::string& unit1, const std::string& unit2) {

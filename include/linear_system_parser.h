@@ -31,6 +31,7 @@ private:
     EngineResult HandleQR(const std::string& input);
     EngineResult HandleEigen(const std::string& input);
     EngineResult HandleCramer(const std::string& input);
+    EngineResult HandleSolve(const std::string& input);
     EngineResult HandleDefaultSolve(const std::string& input);
 
     LinAlgResult solve_linear_system(const std::vector<std::vector<double>>& A, const std::vector<double>& b);

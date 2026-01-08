@@ -22,10 +22,9 @@
 #include "eigen_engine.h"
 #endif
 
-// Temporarily disabled until nanobind headers are resolved
-//#ifdef ENABLE_NANOBIND
-//#include "nanobind_interface.h"
-//#endif
+#ifdef ENABLE_NANOBIND
+#include "nanobind_interface.h"
+#endif
 
 #include "dynamic_calc_types.h"
 
@@ -143,10 +142,9 @@ private:
     std::unique_ptr<EigenEngine> eigen_engine_;
 #endif
 
-// Temporarily disabled until nanobind headers are resolved
-//#ifdef ENABLE_NANOBIND
-//    std::unique_ptr<NanobindInterface> nanobind_interface_;
-//#endif
+#ifdef ENABLE_NANOBIND
+    std::unique_ptr<NanobindInterface> nanobind_interface_;
+#endif
 
     // Decision engine
     ComputeEngine SelectBestEngine(const std::string& operation, 
@@ -239,7 +237,7 @@ namespace Dispatch {
 
 // Macros for performance measurement
 #define DISPATCH_TIMER(op) DispatchTimer timer(op)
-#define SENNA_DISPATCH(op) DispatchTimer timer("🏎️ " + std::string(op))
+#define SENNA_DISPATCH(op) DispatchTimer timer(std::string(op))
 
 } // namespace AXIOM
 

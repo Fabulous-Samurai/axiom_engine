@@ -4,8 +4,8 @@
  * RESTORED: Full functionality including Evaluate, Derivative, and Simplify logic.
  */
 
-#include "algebraic_parser.h"
-#include "string_helpers.h"
+#include "../include/algebraic_parser.h"
+#include "../include/string_helpers.h"
 #include <exception>
 #include <iostream>
 #include <cmath>
@@ -13,6 +13,8 @@
 #include <iomanip>
 #include <algorithm>
 #include <set>
+#include <shared_mutex>
+#include <mutex>
 
 // --- Helpers ---
 
@@ -27,7 +29,8 @@ Precedence GetOpPrecedence(char op) {
 bool IsConst(const NodePtr node, double val) {
     auto res = node->Evaluate({});
     if (!res.value.has_value()) return false;
-    return std::abs(*res.value - val) < 1e-9;
+    double node_val = AXIOM::GetReal(*res.value);
+    return std::abs(node_val - val) < 1e-9;
 }
 
 CalcErr NormalizeError(const EvalResult& res, CalcErr fallback = CalcErr::ArgumentMismatch) {
@@ -50,10 +53,12 @@ std::string FormatNumber(double val) {
     
     if (abs_val >= 1e6 || (abs_val > 0 && abs_val < 1e-6)) {
         // Use scientific notation for very large or very small numbers
-        sprintf(buffer, "%.6e", val);
+        // SECURITY FIX: Use snprintf instead of sprintf to prevent buffer overflow
+        snprintf(buffer, sizeof(buffer), "%.6e", val);
     } else {
         // Use high precision for normal numbers - let's try 15 digits
-        sprintf(buffer, "%.15g", val);
+        // SECURITY FIX: Use snprintf instead of sprintf to prevent buffer overflow
+        snprintf(buffer, sizeof(buffer), "%.15g", val);
     }
     
     return std::string(buffer);
@@ -65,10 +70,10 @@ std::string FormatNumber(double val) {
 
 struct NumberNode : ExprNode {
     double value;
-    NumberNode(double v) : value(v) {}
+    explicit NumberNode(double v) : value(v) {}
     
     
-    EvalResult Evaluate(const std::map<std::string, double>&) const override { return EvalResult::Success(value); }
+    EvalResult Evaluate(const std::map<std::string, AXIOM::Number>&) const override { return EvalResult::Success(value); }
     
     NodePtr Derivative(Arena& arena, std::string_view) const override { return arena.alloc<NumberNode>(0.0); }
     NodePtr Simplify(Arena& arena) const override { return arena.alloc<NumberNode>(value); }
@@ -77,12 +82,16 @@ struct NumberNode : ExprNode {
 
 struct VariableNode : ExprNode {
     std::string_view name;
-    VariableNode(std::string_view n) : name(n) {}
+    explicit VariableNode(std::string_view n) : name(n) {}
     
-    EvalResult Evaluate(const std::map<std::string, double>& vars) const override {
+    EvalResult Evaluate(const std::map<std::string, AXIOM::Number>& vars) const override {
         std::string key(name);
         auto it = vars.find(key);
-        if (it != vars.end()) return EvalResult::Success(it->second);
+        if (it != vars.end()) {
+            // Extract real value from AXIOM::Number
+            double real_value = AXIOM::GetReal(it->second);
+            return EvalResult::Success(real_value);
+        }
         if (key == "Ans") return EvalResult::Success(0.0);
         
         // Mathematical constants
@@ -102,17 +111,20 @@ struct VariableNode : ExprNode {
 };
 
 struct BinaryOpNode : ExprNode {
-    char op; NodePtr left, right;
+    char op;
+    NodePtr left;
+    NodePtr right;
+    
     BinaryOpNode(char c, NodePtr l, NodePtr r) : op(c), left(l), right(r) {}
     
-    // [KRİTİK] Bu fonksiyonu silersen NaN alırsın!
-    EvalResult Evaluate(const std::map<std::string, double>& vars) const override {
+    
+    EvalResult Evaluate(const std::map<std::string, AXIOM::Number>& vars) const override {
         auto left_eval = left->Evaluate(vars);
         if (!left_eval.HasValue()) return left_eval;
         auto right_eval = right->Evaluate(vars);
         if (!right_eval.HasValue()) return right_eval;
-        double l = *left_eval.value;
-        double r = *right_eval.value;
+        double l = AXIOM::GetReal(*left_eval.value);
+        double r = AXIOM::GetReal(*right_eval.value);
         switch(op) {
             case '+': {
                 auto safe_result = SafeMath::SafeAdd(l, r);
@@ -173,9 +185,9 @@ struct BinaryOpNode : ExprNode {
         bool l_const = false, r_const = false;
         double l_val = 0, r_val = 0;
         auto l_eval = simple_left->Evaluate({});
-        if (l_eval.value.has_value()) { l_const = true; l_val = *l_eval.value; }
+        if (l_eval.value.has_value()) { l_const = true; l_val = AXIOM::GetReal(*l_eval.value); }
         auto r_eval = simple_right->Evaluate({});
-        if (r_eval.value.has_value()) { r_const = true; r_val = *r_eval.value; }
+        if (r_eval.value.has_value()) { r_const = true; r_val = AXIOM::GetReal(*r_eval.value); }
 
         if (l_const && r_const) {
             if (op == '+') return arena.alloc<NumberNode>(l_val + r_val);
@@ -222,62 +234,82 @@ struct UnaryOpNode : ExprNode {
     std::string_view func; NodePtr operand;
     UnaryOpNode(std::string_view f, NodePtr op) : func(f), operand(op) {}
     
-  
-    EvalResult Evaluate(const std::map<std::string, double>& vars) const override {
+    /**
+     * @brief O(1) function lookup table for mathematical operations
+     * COGNITIVE COMPLEXITY FIX: Replaced massive if-else chain with hash map lookup
+     * FIX: Changed to std::string keys to avoid string_view comparison issues with arena-allocated strings
+     */
+    static const std::unordered_map<std::string, std::function<double(double)>>& GetFunctionMap() {
+        static const std::unordered_map<std::string, std::function<double(double)>> func_map = {
+            // Trigonometric functions (degrees)
+            {"sin", [](double x) { return std::sin(x * D2R); }},
+            {"cos", [](double x) { return std::cos(x * D2R); }},
+            {"tan", [](double x) { return std::tan(x * D2R); }},
+            {"cot", [](double x) { return 1.0 / std::tan(x * D2R); }},
+            {"sec", [](double x) { return 1.0 / std::cos(x * D2R); }},
+            {"csc", [](double x) { return 1.0 / std::sin(x * D2R); }},
+            
+            // Inverse trigonometric functions (return degrees)
+            {"asin", [](double x) { return std::asin(x) * R2D; }},
+            {"acos", [](double x) { return std::acos(x) * R2D; }},
+            {"atan", [](double x) { return std::atan(x) * R2D; }},
+            {"acot", [](double x) { return std::atan(1.0 / x) * R2D; }},
+            {"asec", [](double x) { return std::acos(1.0 / x) * R2D; }},
+            {"acsc", [](double x) { return std::asin(1.0 / x) * R2D; }},
+            
+            // Hyperbolic functions
+            {"sinh", [](double x) { return std::sinh(x); }},
+            {"cosh", [](double x) { return std::cosh(x); }},
+            {"tanh", [](double x) { return std::tanh(x); }},
+            {"coth", [](double x) { return 1.0 / std::tanh(x); }},
+            {"sech", [](double x) { return 1.0 / std::cosh(x); }},
+            {"csch", [](double x) { return 1.0 / std::sinh(x); }},
+            
+            // Inverse hyperbolic functions
+            {"asinh", [](double x) { return std::asinh(x); }},
+            {"acosh", [](double x) { return std::acosh(x); }},
+            {"atanh", [](double x) { return std::atanh(x); }},
+            {"acoth", [](double x) { return std::atanh(1.0 / x); }},
+            {"asech", [](double x) { return std::acosh(1.0 / x); }},
+            {"acsch", [](double x) { return std::asinh(1.0 / x); }},
+            
+            // Root and power functions
+            {"sqrt", [](double x) { return std::sqrt(x); }},
+            {"cbrt", [](double x) { return std::cbrt(x); }},
+            
+            // Logarithmic and exponential
+            {"ln", [](double x) { return std::log(x); }},
+            {"log", [](double x) { return std::log10(x); }},
+            {"log2", [](double x) { return std::log2(x); }},
+            {"lg", [](double x) { return std::log2(x); }},
+            {"exp", [](double x) { return std::exp(x); }},
+            
+            // Other functions
+            {"abs", [](double x) { return std::abs(x); }},
+            {"u-", [](double x) { return -x; }},
+        };
+        return func_map;
+    }
+    
+    EvalResult Evaluate(const std::map<std::string, AXIOM::Number>& vars) const override {
         auto inner = operand->Evaluate(vars);
         if (!inner.HasValue()) return inner;
-        double val = *inner.value;
-        if (func == "sin") return EvalResult::Success(std::sin(val * D2R));
-        if (func == "cos") return EvalResult::Success(std::cos(val * D2R));
-        if (func == "tan") return EvalResult::Success(std::tan(val * D2R));
-        if (func == "cot") return EvalResult::Success(1.0 / std::tan(val * D2R));
-        if (func == "sec") return EvalResult::Success(1.0 / std::cos(val * D2R));
-        if (func == "csc") return EvalResult::Success(1.0 / std::sin(val * D2R));
         
-        if (func == "asin") return EvalResult::Success(std::asin(val) * R2D);
-        if (func == "acos") return EvalResult::Success(std::acos(val) * R2D);
-        if (func == "atan") return EvalResult::Success(std::atan(val) * R2D);
-        if (func == "acot") return EvalResult::Success(std::atan(1.0 / val) * R2D);
-        if (func == "asec") return EvalResult::Success(std::acos(1.0 / val) * R2D);
-        if (func == "acsc") return EvalResult::Success(std::asin(1.0 / val) * R2D);
+        double val = AXIOM::GetReal(*inner.value);
         
-        if (func == "sinh") return EvalResult::Success(std::sinh(val));
-        if (func == "cosh") return EvalResult::Success(std::cosh(val));
-        if (func == "tanh") return EvalResult::Success(std::tanh(val));
-        if (func == "coth") return EvalResult::Success(1.0 / std::tanh(val));
-        if (func == "sech") return EvalResult::Success(1.0 / std::cosh(val));
-        if (func == "csch") return EvalResult::Success(1.0 / std::sinh(val));
+        // Special cases that need validation before execution
+        if (func == "sqrt" && val < 0) {
+            return EvalResult::Failure(CalcErr::NegativeRoot);
+        }
+        if ((func == "ln" || func == "log" || func == "log2" || func == "lg") && val <= 0) {
+            return EvalResult::Failure(CalcErr::DomainError);
+        }
         
-        if (func == "asinh") return EvalResult::Success(std::asinh(val));
-        if (func == "acosh") return EvalResult::Success(std::acosh(val));
-        if (func == "atanh") return EvalResult::Success(std::atanh(val));
-        if (func == "acoth") return EvalResult::Success(std::atanh(1.0 / val));
-        if (func == "asech") return EvalResult::Success(std::asinh(1.0 / val));
-        if (func == "acsch") return EvalResult::Success(std::asinh(1.0 / val));
-
-        if (func == "sqrt") {
-            if (val < 0) return EvalResult::Failure(CalcErr::NegativeRoot);
-            return EvalResult::Success(std::sqrt(val));
-        }
-        if (func == "cbrt") return EvalResult::Success(std::cbrt(val));
-        if (func == "abs") return EvalResult::Success(std::abs(val));
-        if (func == "ln") {
-            if (val <= 0) return EvalResult::Failure(CalcErr::DomainError);
-            return EvalResult::Success(std::log(val));
-        }
-        if (func == "log") {
-            if (val <= 0) return EvalResult::Failure(CalcErr::DomainError);
-            return EvalResult::Success(std::log10(val));
-        }
-        if (func == "log2" || func == "lg") {
-            if (val <= 0) return EvalResult::Failure(CalcErr::DomainError);
-            return EvalResult::Success(std::log2(val));
-        }
-        if (func == "exp") return EvalResult::Success(std::exp(val));
-        
-        // Additional mathematical functions
+        // Factorial requires special handling (not in lookup table)
         if (func == "factorial") {
-            if (val < 0 || val != std::floor(val) || val > 170) return EvalResult::Failure(CalcErr::DomainError);
+            if (val < 0 || val != std::floor(val) || val > 170) {
+                return EvalResult::Failure(CalcErr::DomainError);
+            }
             double result = 1.0;
             for (int i = 2; i <= static_cast<int>(val); ++i) {
                 result *= i;
@@ -285,7 +317,22 @@ struct UnaryOpNode : ExprNode {
             return EvalResult::Success(result);
         }
         
-        if (func == "u-") return EvalResult::Success(-val);
+        // O(1) lookup in function map (convert string_view to string for lookup)
+        const auto& func_map = GetFunctionMap();
+        auto it = func_map.find(std::string(func));
+        if (it != func_map.end()) {
+            try {
+                double result = it->second(val);
+                if (!std::isfinite(result)) {
+                    return EvalResult::Failure(CalcErr::DomainError);
+                }
+                return EvalResult::Success(result);
+            } catch (...) {
+                return EvalResult::Failure(CalcErr::DomainError);
+            }
+        }
+        
+        // Unknown function
         return EvalResult::Success(0.0);
     }
     
@@ -490,7 +537,7 @@ struct MultiArgFunctionNode : ExprNode {
     MultiArgFunctionNode(std::string_view f, std::vector<NodePtr> arguments) 
         : func(f), args(std::move(arguments)) {}
     
-    EvalResult Evaluate(const std::map<std::string, double>& vars) const override {
+    EvalResult Evaluate(const std::map<std::string, AXIOM::Number>& vars) const override {
         if (func == "limit") {
             if (args.size() != 3) return EvalResult::Failure(CalcErr::ArgumentMismatch);
             
@@ -502,7 +549,7 @@ struct MultiArgFunctionNode : ExprNode {
             std::string var_name = std::string(var_node->name);
             auto point_result = args[2]->Evaluate(vars);
             if (!point_result.HasValue()) return point_result;
-            double approach_point = *point_result.value;
+            double approach_point = AXIOM::GetReal(*point_result.value);
             
             // Check for infinite limit
             if (std::isinf(approach_point)) {
@@ -527,8 +574,8 @@ struct MultiArgFunctionNode : ExprNode {
                 return EvalResult::Failure(CalcErr::DomainError);
             }
             
-            double a = *lower_result.value;
-            double b = *upper_result.value;
+            double a = AXIOM::GetReal(*lower_result.value);
+            double b = AXIOM::GetReal(*upper_result.value);
             
             // Check for improper integrals
             if (std::isinf(a) || std::isinf(b)) {
@@ -545,7 +592,7 @@ struct MultiArgFunctionNode : ExprNode {
             for (const auto& arg : args) {
                 auto result = arg->Evaluate(vars);
                 if (!result.HasValue()) return result;
-                max_val = std::max(max_val, *result.value);
+                max_val = std::max(max_val, AXIOM::GetReal(*result.value));
             }
             return EvalResult::Success(max_val);
         }
@@ -556,7 +603,7 @@ struct MultiArgFunctionNode : ExprNode {
             for (const auto& arg : args) {
                 auto result = arg->Evaluate(vars);
                 if (!result.HasValue()) return result;
-                min_val = std::min(min_val, *result.value);
+                min_val = std::min(min_val, AXIOM::GetReal(*result.value));
             }
             return EvalResult::Success(min_val);
         }
@@ -567,8 +614,8 @@ struct MultiArgFunctionNode : ExprNode {
             auto b_result = args[1]->Evaluate(vars);
             if (!a_result.HasValue() || !b_result.HasValue()) return EvalResult::Failure(CalcErr::ArgumentMismatch);
             
-            long long a = static_cast<long long>(*a_result.value);
-            long long b = static_cast<long long>(*b_result.value);
+            long long a = static_cast<long long>(AXIOM::GetReal(*a_result.value));
+            long long b = static_cast<long long>(AXIOM::GetReal(*b_result.value));
             a = std::abs(a); b = std::abs(b);
             
             while (b != 0) {
@@ -585,8 +632,8 @@ struct MultiArgFunctionNode : ExprNode {
             auto b_result = args[1]->Evaluate(vars);
             if (!a_result.HasValue() || !b_result.HasValue()) return EvalResult::Failure(CalcErr::ArgumentMismatch);
             
-            long long a = static_cast<long long>(*a_result.value);
-            long long b = static_cast<long long>(*b_result.value);
+            long long a = static_cast<long long>(AXIOM::GetReal(*a_result.value));
+            long long b = static_cast<long long>(AXIOM::GetReal(*b_result.value));
             a = std::abs(a); b = std::abs(b);
             
             if (a == 0 || b == 0) return EvalResult::Success(0.0);
@@ -610,8 +657,8 @@ struct MultiArgFunctionNode : ExprNode {
             auto b_result = args[1]->Evaluate(vars);
             if (!a_result.HasValue() || !b_result.HasValue()) return EvalResult::Failure(CalcErr::ArgumentMismatch);
             
-            double a = *a_result.value;
-            double b = *b_result.value;
+            double a = AXIOM::GetReal(*a_result.value);
+            double b = AXIOM::GetReal(*b_result.value);
             if (b == 0) return EvalResult::Failure(CalcErr::DivideByZero);
             
             return EvalResult::Success(std::fmod(a, b));
@@ -660,16 +707,16 @@ struct MultiArgFunctionNode : ExprNode {
     }
 
 private:
-    EvalResult EvaluateNumericalLimit(const std::map<std::string, double>& vars, 
+    EvalResult EvaluateNumericalLimit(const std::map<std::string, AXIOM::Number>& vars, 
                                     const std::string& var_name, double approach_point) const {
         constexpr double epsilon = 1e-6;  // Relaxed tolerance
         constexpr int max_iterations = 20; // Reduced iterations for faster convergence
         
         auto evaluate_at = [&](double x) -> std::optional<double> {
-            std::map<std::string, double> local_vars = vars;
-            local_vars[var_name] = x;
+            std::map<std::string, AXIOM::Number> local_vars = vars;
+            local_vars[var_name] = AXIOM::Number(x);
             auto result = args[0]->Evaluate(local_vars);
-            return result.HasValue() ? std::optional<double>(*result.value) : std::nullopt;
+            return result.HasValue() ? std::optional<double>(AXIOM::GetReal(*result.value)) : std::nullopt;
         };
         
         // Try direct evaluation first (for continuous functions)
@@ -704,22 +751,22 @@ private:
             }
         }
         
-        // Return one-sided limit if available
+        
         if (left_limit.has_value()) return EvalResult::Success(*left_limit);
         if (right_limit.has_value()) return EvalResult::Success(*right_limit);
         
         return EvalResult::Failure(CalcErr::IndeterminateResult);
     }
     
-    EvalResult EvaluateLimitAtInfinity(const std::map<std::string, double>& vars,
+    EvalResult EvaluateLimitAtInfinity(const std::map<std::string, AXIOM::Number>& vars,
                                      const std::string& var_name, bool positive_infinity) const {
         constexpr int max_iterations = 20;
         
         auto evaluate_at = [&](double x) -> std::optional<double> {
-            std::map<std::string, double> local_vars = vars;
-            local_vars[var_name] = x;
+            std::map<std::string, AXIOM::Number> local_vars = vars;
+            local_vars[var_name] = AXIOM::Number(x);
             auto result = args[0]->Evaluate(local_vars);
-            return result.HasValue() ? std::optional<double>(*result.value) : std::nullopt;
+            return result.HasValue() ? std::optional<double>(AXIOM::GetReal(*result.value)) : std::nullopt;
         };
         
         std::optional<double> prev_val;
@@ -754,17 +801,17 @@ private:
         return EvalResult::Failure(CalcErr::IndeterminateResult);
     }
     
-    EvalResult EvaluateNumericalIntegral(const std::map<std::string, double>& vars,
+    EvalResult EvaluateNumericalIntegral(const std::map<std::string, AXIOM::Number>& vars,
                                        const std::string& var_name, double a, double b) const {
         // Adaptive Simpson's Rule with error control
         constexpr double tolerance = 1e-12;
         constexpr int max_recursion = 15;
         
         auto f = [&](double x) -> double {
-            std::map<std::string, double> local_vars = vars;
-            local_vars[var_name] = x;
+            std::map<std::string, AXIOM::Number> local_vars = vars;
+            local_vars[var_name] = AXIOM::Number(x);
             auto result = args[0]->Evaluate(local_vars);
-            return result.HasValue() ? *result.value : 0.0;
+            return result.HasValue() ? AXIOM::GetReal(*result.value) : 0.0;
         };
         
         std::function<double(double, double, double, double, double, int)> simpson_adaptive = 
@@ -799,12 +846,15 @@ private:
             double result = simpson_adaptive(a, b, fa, fb, fc, 0);
             return EvalResult::Success(result);
             
+        } catch (const std::exception& e) {
+            // Log domain error for mathematical operations
+            return EvalResult::Failure(CalcErr::DomainError);
         } catch (...) {
             return EvalResult::Failure(CalcErr::DomainError);
         }
     }
     
-    EvalResult EvaluateImproperIntegral(const std::map<std::string, double>& vars,
+    EvalResult EvaluateImproperIntegral(const std::map<std::string, AXIOM::Number>& vars,
                                       const std::string& var_name, double a, double b) const {
         // Handle improper integrals by taking limits
         constexpr double large_val = 1e6;
@@ -973,10 +1023,15 @@ NodePtr AlgebraicParser::ParseExpression(std::string_view input) {
 }
 
 EngineResult AlgebraicParser::ParseAndExecute(const std::string& input) {
-    return ParseAndExecuteWithContext(input, {}); 
+    std::map<std::string, AXIOM::Number> empty_context;
+    return ParseAndExecuteWithContext(input, empty_context); 
 }
 
-EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& input, const std::map<std::string, double>& context) {
+/**
+ * @brief Thread-safe expression parsing and execution with context
+ * THREAD SAFETY: Uses shared_lock for cache reads, unique_lock for cache writes
+ */
+EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& input, const std::map<std::string, AXIOM::Number>& context) {
     // Basic syntax validation
     std::string trimmed = input;
     while (!trimmed.empty() && std::isspace(trimmed.front())) trimmed.erase(0, 1);
@@ -984,6 +1039,22 @@ EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& inpu
     
     if (trimmed.empty()) {
         return {{}, {EngineErrorResult(CalcErr::ParseError)}};
+    }
+    
+    // THREAD SAFETY: Check cache with shared lock (concurrent reads allowed)
+    {
+        std::shared_lock<std::shared_mutex> read_lock(mutex_s);
+        auto cache_it = eval_cache_.find(trimmed);
+        if (cache_it != eval_cache_.end() && context.empty()) {
+            const auto& cached = cache_it->second;
+            if (cached.HasValue()) {
+                double val = AXIOM::GetReal(*cached.value);
+                return EngineSuccessResult(val);
+            }
+            EngineResult err_result;
+            err_result.error = EngineErrorResult(cached.error);
+            return err_result;
+        }
     }
     
     // Check for invalid consecutive operators
@@ -1009,7 +1080,7 @@ EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& inpu
         return {{}, {EngineErrorResult(CalcErr::ParseError)}};
     }
     
-    // Check for unknown functions (basic validation)
+    // Check for unknown functions (basic validation) - OPTIMIZED to avoid slowdown with many functions
     static const std::set<std::string> known_functions = {
         "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh",
         "asinh", "acosh", "atanh", "log", "ln", "log2", "exp", "sqrt", "cbrt",
@@ -1018,9 +1089,13 @@ EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& inpu
         "sech", "csch", "coth", "asech", "acsch", "acoth"
     };
     
-    // Simple function validation (look for word followed by parentheses)
+    // Optimized function validation - limit iterations for very long strings
     size_t pos = 0;
-    while ((pos = trimmed.find('(', pos)) != std::string::npos) {
+    int func_check_count = 0;
+    const int max_func_checks = 1000;  // Safety limit to prevent O(n²) behavior
+    
+    while ((pos = trimmed.find('(', pos)) != std::string::npos && func_check_count < max_func_checks) {
+        func_check_count++;
         // Find the start of the potential function name
         size_t func_start = pos;
         while (func_start > 0 && (std::isalpha(trimmed[func_start - 1]) || trimmed[func_start - 1] == '_')) {
@@ -1036,20 +1111,7 @@ EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& inpu
         pos++;
     }
     
-    // Check cache first for performance
-    std::string cache_key = input;
-    for (const auto& [key, val] : context) {
-        cache_key += "_" + key + "=" + std::to_string(val);
-    }
-    if (eval_cache_.size() < MAX_CACHE_SIZE) {
-        auto cache_it = eval_cache_.find(cache_key);
-        if (cache_it != eval_cache_.end() && cache_it->second.value.has_value()) {
-            return {EngineSuccessResult(*cache_it->second.value), {}};
-        } else if (cache_it != eval_cache_.end()) {
-            return {{}, {EngineErrorResult(cache_it->second.error)}};
-        }
-    }
-    
+    // Arena reset and expression parsing
     arena_.reset();
     std::string processed_input = input; 
     std::stringstream ss(processed_input);
@@ -1058,38 +1120,38 @@ EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& inpu
 
     for (const auto& entry : special_commands_) {
         if (first_token == entry.command) {
-            auto result = entry.handler(processed_input);
-            // Cache the result (only cache double results for now to avoid complexity)
-            if (eval_cache_.size() < MAX_CACHE_SIZE) {
-                if (result.result.has_value() && std::holds_alternative<double>(*result.result)) {
-                    eval_cache_[cache_key] = EvalResult::Success(std::get<double>(*result.result));
-                } else if (result.error.has_value() && std::holds_alternative<CalcErr>(*result.error)) {
-                    eval_cache_[cache_key] = EvalResult::Failure(std::get<CalcErr>(*result.error));
-                }
-            }
-            return result;
+            return entry.handler(processed_input);
         }
     }
 
     try {
         NodePtr root = ParseExpression(processed_input);
         auto evaluation = root->Evaluate(context);
-        if (evaluation.value.has_value()) {
-            // Cache successful evaluation
-            if (eval_cache_.size() < MAX_CACHE_SIZE) {
-                eval_cache_[cache_key] = evaluation;
+        
+        // THREAD SAFETY: Exclusive lock for writing to cache
+        if (context.empty() && evaluation.HasValue()) {
+            std::lock_guard<std::shared_mutex> write_lock(mutex_s);
+            
+            // Limit cache size to prevent memory growth
+            if (eval_cache_.size() >= MAX_CACHE_SIZE) {
+                eval_cache_.clear();
             }
-            return {EngineSuccessResult(*evaluation.value), {}};
+            eval_cache_[trimmed] = evaluation;
+        }
+        
+        if (evaluation.value.has_value()) {
+            double result_val = AXIOM::GetReal(*evaluation.value);
+            return EngineSuccessResult(result_val);
         }
         CalcErr err = evaluation.error == CalcErr::None ? CalcErr::ArgumentMismatch : evaluation.error;
-        // Cache error
-        if (eval_cache_.size() < MAX_CACHE_SIZE) {
-            eval_cache_[cache_key] = evaluation;
-        }
-        return {{}, {EngineErrorResult(err)}};
+        EngineResult err_result;
+        err_result.error = EngineErrorResult(err);
+        return err_result;
     }
     catch (const std::exception&) {
-        return {{}, {EngineErrorResult(CalcErr::ArgumentMismatch)}};
+        EngineResult err_result;
+        err_result.error = EngineErrorResult(CalcErr::ArgumentMismatch);
+        return err_result;
     }
 }
 
@@ -1155,18 +1217,32 @@ EngineResult AlgebraicParser::HandleDerivative(const std::string& input) {
         NodePtr root = ParseExpression(expression);
         NodePtr derivative = root->Derivative(arena_, var);
         NodePtr simplified = derivative->Simplify(arena_)->Simplify(arena_);
-        return {EngineSuccessResult(simplified->ToString(Precedence::None)), {}}; 
+        return EngineSuccessResult(simplified->ToString(Precedence::None)); 
+    } catch (const std::exception& e) {
+        EngineResult err_result;
+        err_result.error = EngineErrorResult(CalcErr::ParseError);
+        return err_result;
     } catch (...) {
-        return {{}, {EngineErrorResult(CalcErr::ParseError)}};
+        EngineResult err_result;
+        err_result.error = EngineErrorResult(CalcErr::ParseError);
+        return err_result;
     }
 }
 
 EngineResult AlgebraicParser::SolveQuadratic(double a, double b, double c) {
-    if (a == 0.0) return {{}, {EngineErrorResult(CalcErr::IndeterminateResult)}};
+    if (a == 0.0) {
+        EngineResult err_result;
+        err_result.error = EngineErrorResult(CalcErr::IndeterminateResult);
+        return err_result;
+    }
     double d = b * b - 4 * a * c;
-    if (d < 0) return {{}, {EngineErrorResult(CalcErr::NegativeRoot)}};
+    if (d < 0) {
+        EngineResult err_result;
+        err_result.error = EngineErrorResult(CalcErr::NegativeRoot);
+        return err_result;
+    }
     double s = std::sqrt(d);
-    return {EngineSuccessResult(Vector({(-b + s) / (2 * a), (-b - s) / (2 * a)})), {}};
+    return EngineSuccessResult(Vector({(-b + s) / (2 * a), (-b - s) / (2 * a)}));
 }
 
 EngineResult AlgebraicParser::SolveNonLinearSystem(const std::vector<std::string>& equation_strs, std::map<std::string, double>& guess) {
@@ -1177,30 +1253,37 @@ EngineResult AlgebraicParser::SolveNonLinearSystem(const std::vector<std::string
     std::vector<std::string> var_names;
     for(auto const& [key, val] : guess) var_names.push_back(key);
     int n = var_names.size();
+    
+    // Convert guess to AXIOM::Number context
+    std::map<std::string, AXIOM::Number> num_guess;
+    for(const auto& [key, val] : guess) {
+        num_guess[key] = AXIOM::Number(val);
+    }
+    
     for (int iter = 0; iter < max_iter; ++iter) {
         std::vector<double> F(n);
         for(int i=0; i<n; ++i) {
-            auto eval = roots[i]->Evaluate(guess);
+            auto eval = roots[i]->Evaluate(num_guess);
             if (!eval.value.has_value()) {
                 return {{}, EngineErrorResult(NormalizeError(eval, CalcErr::DomainError))};
             }
-            F[i] = *eval.value;
+            F[i] = AXIOM::GetReal(*eval.value);
         }
         double err = 0; for(double v:F) err+=v*v;
         if(std::sqrt(err) < 1e-6) break;
         std::vector<std::vector<double>> J(n, std::vector<double>(n));
         for (int j = 0; j < n; ++j) {
             std::string v = var_names[j];
-            double old = guess[v];
-            guess[v] += epsilon;
+            double old = AXIOM::GetReal(num_guess[v]);
+            num_guess[v] = AXIOM::Number(old + epsilon);
             for (int i = 0; i < n; ++i) {
-                auto eval = roots[i]->Evaluate(guess);
+                auto eval = roots[i]->Evaluate(num_guess);
                 if (!eval.value.has_value()) {
                     return {{}, EngineErrorResult(NormalizeError(eval, CalcErr::DomainError))};
                 }
-                J[i][j] = (*eval.value - F[i]) / epsilon;
+                J[i][j] = (AXIOM::GetReal(*eval.value) - F[i]) / epsilon;
             }
-            guess[v] = old;
+            num_guess[v] = AXIOM::Number(old);
         }
         std::vector<double> neg_F = F;
         for(double& val : neg_F) val = -val;
@@ -1223,11 +1306,14 @@ EngineResult AlgebraicParser::SolveNonLinearSystem(const std::vector<std::string
             return b;
         };
         std::vector<double> d = SolveLinearSystemSmall(J, neg_F);
-        for(int i=0; i<n; ++i) guess[var_names[i]] += d[i];
+        for(int i=0; i<n; ++i) {
+            double old_val = AXIOM::GetReal(num_guess[var_names[i]]);
+            num_guess[var_names[i]] = AXIOM::Number(old_val + d[i]);
+        }
     }
     std::vector<double> res;
-    for(auto& name : var_names) res.push_back(guess[name]);
-    return {EngineSuccessResult(res), {}};
+    for(auto& name : var_names) res.push_back(AXIOM::GetReal(num_guess[name]));
+    return EngineSuccessResult(res);
 }
 
 EngineResult AlgebraicParser::HandlePlotFunction(const std::string& input) {
@@ -1261,11 +1347,13 @@ EngineResult AlgebraicParser::HandlePlotFunction(const std::string& input) {
     }
     
     if (args.size() != 5) {
-        return {{}, {EngineErrorResult(CalcErr::ArgumentMismatch)}};
+        EngineResult err_result;
+        err_result.error = EngineErrorResult(CalcErr::ArgumentMismatch);
+        return err_result;
     }
     
     // For now, return a special string result to indicate this is a plot command
     // The actual plotting will be handled by the CalcEngine
     std::string plot_command = "PLOT_FUNCTION:" + args[0] + "," + args[1] + "," + args[2] + "," + args[3] + "," + args[4];
-    return {EngineSuccessResult(plot_command), {}};
+    return EngineSuccessResult(plot_command);
 }

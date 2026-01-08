@@ -262,7 +262,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### 🎯 Core Features
 - **Algebraic Calculator**: Advanced expression parsing with AST evaluation
 - **Linear System Solver**: Matrix operations and equation solving
-- **FTXUI Integration**: Modern terminal user interface
 - **Exception-Free Architecture**: `EvalResult<T>` error handling pattern
 - **Thread-Safe Operations**: Concurrent expression evaluation
 - **Command History**: Interactive navigation and calculation replay

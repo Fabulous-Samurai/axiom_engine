@@ -60,8 +60,19 @@ public:
         STARTING,
         READY,
         BUSY,
-        ERROR,
+        PIPE_ERROR,
         SHUTDOWN
+    };
+
+    enum class PipeError {
+        None,
+        PermissionDenied,
+        AlreadyExists,
+        ResourceExhausted,
+        InvalidName,
+        SystemError,
+        SecurityDescriptorFailed,
+        Unknown
     };
 
 private:
@@ -123,8 +134,9 @@ public:
 private:
     void daemon_loop();
     void request_processor_loop();
-    bool setup_pipe();
+    PipeError setup_pipe();
     void cleanup_pipe();
+    static const char* pipe_error_to_string(PipeError error);
     Response execute_command(const Request& request);
     void update_metrics(double execution_time);
 };

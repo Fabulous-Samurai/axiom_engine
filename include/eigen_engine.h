@@ -82,7 +82,7 @@ public:
     
     // Eigenvalue/Eigenvector computations
     std::pair<Vector, Matrix> EigenDecomposition(const Matrix& A);
-    std::pair<Matrix, Vector, Matrix> SVD(const Matrix& A);
+    std::tuple<Matrix, Vector, Matrix> SVD(const Matrix& A);
     
     // System solving (ultra-fast)
     Vector SolveLinearSystem(const Matrix& A, const Vector& b);
@@ -137,6 +137,7 @@ private:
     CPUOptimizationLevel optimization_level_;
     bool simd_enabled_;
     int num_threads_;
+    // THREAD-SAFETY FIX: mutable allows modification in const methods without const_cast
     mutable CPUPerformanceMetrics last_metrics_;
     
     // Internal cache for performance
@@ -178,9 +179,9 @@ private:
     std::chrono::high_resolution_clock::time_point start_time_;
 };
 
-// Convenience macros for performance measurement
-#define MEASURE_PERFORMANCE(op_name) PerformanceTimer timer(op_name)
-#define SENNA_SPEED_EIGEN(op_name) PerformanceTimer timer("🏎️ " + std::string(op_name))
+// Convenience macros for performance measurement (disabled for maximum speed)
+#define MEASURE_PERFORMANCE(op_name) do {} while(0)
+#define SENNA_SPEED_EIGEN(op_name) do {} while(0)
 
 } // namespace AXIOM
 

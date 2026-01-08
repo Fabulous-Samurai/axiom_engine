@@ -8,6 +8,12 @@
 
 #include "selective_dispatcher.h"
 #include "../../include/dynamic_calc.h"
+#ifdef ENABLE_EIGEN
+#include "../../include/eigen_engine.h"
+#endif
+#ifdef ENABLE_PYTHON_FFI
+#include "../../include/python_engine.h"
+#endif
 #include <iostream>
 #include <chrono>
 #include <sstream>
@@ -28,26 +34,31 @@ SelectiveDispatcher::SelectiveDispatcher()
     engine_availability_[ComputeEngine::Python] = false; // Enable when nanobind is available
     
 // Eigen engine temporarily disabled until EigenEngine class is implemented
-// #ifdef ENABLE_EIGEN
-//     try {
-//         eigen_engine_ = std::make_unique<EigenEngine>();
-//         engine_availability_[ComputeEngine::Eigen] = true;
-//         std::cout << "✅ Eigen CPU Engine initialized\n";
-//     } catch (const std::exception& e) {
-//         std::cerr << "⚠️ Eigen Engine initialization failed: " << e.what() << "\n";
-//     }
-// #endif
+#ifdef ENABLE_EIGEN
+    try {
+        eigen_engine_ = std::make_unique<EigenEngine>();
+        engine_availability_[ComputeEngine::Eigen] = true;
+        std::cout << "Eigen CPU Engine initialized\n";
+    } catch (const std::exception& e) {
+        std::cerr << "Eigen Engine initialization failed: " << e.what() << "\n";
+    }
+#endif
 
-// Python engine temporarily disabled until PythonEngine class is implemented
-    // #ifdef ENABLE_NANOBIND
-    // try {
-    //     python_engine_ = std::make_unique<PythonEngine>();
-    //     engine_availability_[ComputeEngine::Python] = true;
-    //     std::cout << "✅ Python Engine (nanobind) initialized\n";
-    // } catch (const std::exception& e) {
-    //     std::cerr << "⚠️ Python Engine initialization failed: " << e.what() << "\n";
-    // }
-    // #endif
+// Initialize Python engine if FFI is enabled
+#ifdef ENABLE_PYTHON_FFI
+    try {
+        python_engine_ = std::make_unique<::PythonEngine>();
+        if (python_engine_ && python_engine_->IsInitialized()) {
+            engine_availability_[ComputeEngine::Python] = true;
+            std::cout << "Python Engine initialized" << "\n";
+        } else {
+            engine_availability_[ComputeEngine::Python] = false;
+        }
+    } catch (const std::exception& e) {
+        engine_availability_[ComputeEngine::Python] = false;
+        std::cerr << "Python Engine initialization failed: " << e.what() << "\n";
+    }
+#endif
 }
 
 SelectiveDispatcher::~SelectiveDispatcher() = default;
@@ -73,11 +84,8 @@ EngineResult SelectiveDispatcher::DispatchOperation(const std::string& expressio
 
 ComputeEngine SelectiveDispatcher::SelectOptimalEngine(const std::string& expression, 
                                                       OperationComplexity complexity) {
-    // For initial implementation, use Native engine only
-    return ComputeEngine::Native;
+    // Future implementation: analyze expression characteristics & availability
     
-    // Future implementation will analyze expression characteristics:
-    /*
     // Override for preferred engine if specified
     if (preferred_engine_ != ComputeEngine::Auto && 
         IsEngineAvailable(preferred_engine_)) {
@@ -101,7 +109,7 @@ ComputeEngine SelectiveDispatcher::SelectOptimalEngine(const std::string& expres
     if (complexity >= OperationComplexity::Complex && IsEngineAvailable(ComputeEngine::Eigen)) {
         return ComputeEngine::Eigen;   // Eigen for complex numerical computations
     }
-    */
+    
     
     // Default to native engine for simple operations
     return ComputeEngine::Native;
@@ -111,11 +119,6 @@ EngineResult SelectiveDispatcher::ExecuteWithFallback(const std::string& express
                                                      ComputeEngine engine) {
     EngineResult result;
     
-    // For initial implementation, only use native engine
-    result = ExecuteNative(expression);
-    return result;
-    
-    /*
     try {
         switch (engine) {
             case ComputeEngine::Native:
@@ -125,8 +128,8 @@ EngineResult SelectiveDispatcher::ExecuteWithFallback(const std::string& express
             case ComputeEngine::Eigen:
 #ifdef ENABLE_EIGEN
                 if (eigen_engine_) {
-                    result = eigen_engine_->Calculate(expression);
-                    break;
+                    // TODO: Integrate expression parsing to use EigenEngine.
+                    // For now, fallback to native calculation until mapping exists.
                 }
 #endif
                 // Fallback to native
@@ -134,14 +137,14 @@ EngineResult SelectiveDispatcher::ExecuteWithFallback(const std::string& express
                 break;
                 
             case ComputeEngine::Python:
-                // Python engine temporarily disabled until PythonEngine class is implemented
-                // #ifdef ENABLE_NANOBIND
-                // if (python_engine_) {
-                //     result = python_engine_->Calculate(expression);
-                //     break;
-                // }
-                // #endif
-                // Fallback to native
+#ifdef ENABLE_PYTHON_FFI
+                if (python_engine_ && python_engine_->IsInitialized()) {
+                    // Try to evaluate expression directly in Python
+                    result = python_engine_->EvaluatePython(expression);
+                    break;
+                }
+#endif
+                // Fallback to native when Python unavailable
                 result = ExecuteNative(expression);
                 break;
                 
@@ -158,7 +161,8 @@ EngineResult SelectiveDispatcher::ExecuteWithFallback(const std::string& express
             result = {{}, {CalcErr::OperationNotFound}};
         }
     }
-    */
+    
+    return result;
 }
 
 EngineResult SelectiveDispatcher::ExecuteNative(const std::string& expression) {
