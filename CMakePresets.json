@@ -1,0 +1,48 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 12,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default-ninja",
+      "displayName": "Default Ninja",
+      "description": "Default configure preset using Ninja generator",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "AXIOM_ENABLE_CXX20_MODULES": "OFF"
+      }
+    },
+    {
+      "name": "modules-ninja",
+      "displayName": "Modules Ninja",
+      "description": "Ninja preset with incremental C++20 modules enabled",
+      "inherits": "default-ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "AXIOM_ENABLE_CXX20_MODULES": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "build-release",
+      "displayName": "Build Release",
+      "configurePreset": "default-ninja",
+      "configuration": "Release"
+    },
+    {
+      "name": "build-modules",
+      "displayName": "Build Modules Pilot",
+      "configurePreset": "modules-ninja",
+      "configuration": "Release",
+      "targets": [
+        "axiom_modules_pilot"
+      ]
+    }
+  ]
+}

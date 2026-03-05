@@ -172,7 +172,14 @@ codeql-*.zip
 
 # Local session/temp workspace folders
 tmpclaude-*/
+states/
 
 # Generated benchmark output files
 benchmark_results.csv
 benchmark_results.json
+
+# Local CodeQL test project db cache
+codeql-custom-queries-python/*.testproj/
+
+# Local TLA+ tool binary cache
+tools/tla/tla2tools.jar

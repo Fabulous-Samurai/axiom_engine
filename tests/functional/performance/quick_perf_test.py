@@ -5,15 +5,27 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent / "gui/python"))
+repo_root = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(repo_root / "gui" / "python"))
 from gui_helpers import CppEngineInterface
+
+
+def resolve_axiom_exe() -> str:
+    candidates = [
+        repo_root / "build" / "axiom.exe",
+        repo_root / "ninja-build" / "axiom.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    raise FileNotFoundError("axiom.exe not found in build/ or ninja-build/")
 
 print("=" * 70)
 print("🚀 AXIOM Persistent Subprocess Performance Test")
 print("=" * 70)
 
 # Initialize engine
-engine = CppEngineInterface("ninja-build/axiom.exe")
+engine = CppEngineInterface(resolve_axiom_exe())
 print(f"\n✅ Engine initialized: {'Persistent mode' if engine.process else 'Fallback mode'}\n")
 
 # Test cases - progressively more complex
@@ -52,7 +64,12 @@ for i, (name, expr, context) in enumerate(tests, 1):
     total_time += elapsed_ms
     
     if result["success"]:
-        speed = "⚡ SENNA" if elapsed_ms < 5 else "🏎️  F1" if elapsed_ms < 20 else "🚗 NORMAL"
+        if elapsed_ms < 5:
+            speed = "⚡ SENNA"
+        elif elapsed_ms < 20:
+            speed = "🏎️  F1"
+        else:
+            speed = "🚗 NORMAL"
         status = "✅"
     else:
         speed = "❌ ERROR"

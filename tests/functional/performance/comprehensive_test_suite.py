@@ -6,15 +6,27 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent / "gui/python"))
+repo_root = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(repo_root / "gui" / "python"))
 from gui_helpers import CppEngineInterface
+
+
+def resolve_axiom_exe() -> str:
+    candidates = [
+        repo_root / "build" / "axiom.exe",
+        repo_root / "ninja-build" / "axiom.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    raise FileNotFoundError("axiom.exe not found in build/ or ninja-build/")
 
 print("\n" + "="*80)
 print("🚀 COMPREHENSIVE AXIOM ENGINE TEST SUITE v3.0")
 print("="*80)
 
 # Initialize engine once
-engine = CppEngineInterface("ninja-build/axiom.exe")
+engine = CppEngineInterface(resolve_axiom_exe())
 persistent_mode = engine.process is not None and engine.process.poll() is None
 print(f"\n✅ Engine Mode: {'🟢 PERSISTENT' if persistent_mode else '🔵 FALLBACK'}")
 print(f"{'='*80}\n")
@@ -38,7 +50,14 @@ def run_test(category, name, expression, expected_contains=None):
     if expected_contains and success:
         success = expected_contains in str(result.get("result", ""))
     
-    speed = "⚡ SENNA" if elapsed_ms < 5 else "🏎️  F1" if elapsed_ms < 20 else "🚗 NORMAL" if elapsed_ms < 50 else "🐌 SLOW"
+    if elapsed_ms < 5:
+        speed = "⚡ SENNA"
+    elif elapsed_ms < 20:
+        speed = "🏎️  F1"
+    elif elapsed_ms < 50:
+        speed = "🚗 NORMAL"
+    else:
+        speed = "🐌 SLOW"
     status = "✅" if success else "❌"
     
     all_results.append({
@@ -224,7 +243,14 @@ for category in sorted(category_times.keys()):
     count = len(times)
     total = sum(times)
     avg = total / count if count > 0 else 0
-    speed = "⚡ SENNA" if avg < 1 else "🏎️  F1" if avg < 5 else "🚗 NORMAL" if avg < 20 else "🐌 SLOW"
+    if avg < 1:
+        speed = "⚡ SENNA"
+    elif avg < 5:
+        speed = "🏎️  F1"
+    elif avg < 20:
+        speed = "🚗 NORMAL"
+    else:
+        speed = "🐌 SLOW"
     print(f"{category:<20} {count:<8} {total:>10.2f}ms  {avg:>10.2f}ms  {speed}")
 
 all_times = [r["time_ms"] for r in all_results]

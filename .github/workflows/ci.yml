@@ -101,6 +101,59 @@ jobs:
         name: cppcheck-report
         path: cppcheck-report.xml
 
+  formal-verification:
+    name: Formal Verification (TLA+)
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Detect formal verification changes
+      id: formal_changes
+      uses: dorny/paths-filter@v3
+      with:
+        filters: |
+          formal:
+            - 'formal/tla/**'
+            - 'docs/formal/**'
+            - '.github/workflows/ci.yml'
+
+    - name: Skip note (no formal changes)
+      if: steps.formal_changes.outputs.formal != 'true'
+      run: echo "No formal/TLA+ changes detected. Skipping TLC run."
+
+    - name: Setup Java
+      if: steps.formal_changes.outputs.formal == 'true'
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+
+    - name: Download TLC tools
+      if: steps.formal_changes.outputs.formal == 'true'
+      run: |
+        curl -fsSL -o tla2tools.jar https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
+        java -jar tla2tools.jar -help > /dev/null
+
+    - name: Run TLA+ model checks
+      if: steps.formal_changes.outputs.formal == 'true'
+      run: |
+        mkdir -p formal/tla/logs
+        for cfg in formal/tla/*.cfg; do
+          spec="${cfg%.cfg}.tla"
+          name="$(basename "${cfg%.cfg}")"
+          echo "Running TLC for ${name}"
+          java -jar tla2tools.jar -config "$cfg" "$spec" | tee "formal/tla/logs/${name}.log"
+        done
+
+    - name: Upload TLC output
+      if: always() && steps.formal_changes.outputs.formal == 'true'
+      uses: actions/upload-artifact@v3
+      with:
+        name: tlc-output
+        path: formal/tla/logs/*.log
+
   code-coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
