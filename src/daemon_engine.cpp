@@ -150,10 +150,21 @@ DaemonEngine::DaemonEngine(const std::string& pipe_name)
 #endif
 }
 
-DaemonEngine::~DaemonEngine()
+DaemonEngine::~DaemonEngine() noexcept
 {
-    if (running_.load(std::memory_order_acquire))
+    if (!running_.load(std::memory_order_acquire))
+    {
+        return;
+    }
+
+    try
+    {
         stop();
+    }
+    catch (...)
+    {
+        // Destructors must not throw; swallow shutdown failures.
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +199,7 @@ bool DaemonEngine::start()
     return true;
 }
 
-void DaemonEngine::stop()
+void DaemonEngine::stop() noexcept
 {
     bool expected = true;
     if (!running_.compare_exchange_strong(expected, false,
@@ -200,13 +211,26 @@ void DaemonEngine::stop()
 
     status_.store(DaemonStatus::SHUTDOWN, std::memory_order_release);
 
-    if (daemon_thread_.joinable())     daemon_thread_.join();
-    if (request_processor_.joinable()) request_processor_.join();
+    try
+    {
+        if (daemon_thread_.joinable())
+        {
+            daemon_thread_.join();
+        }
+        if (request_processor_.joinable())
+        {
+            request_processor_.join();
+        }
 
-    cleanup_pipe();
+        cleanup_pipe();
 
-    std::scoped_lock lock(sessions_mutex_);
-    sessions_.clear();
+        std::scoped_lock lock(sessions_mutex_);
+        sessions_.clear();
+    }
+    catch (...)
+    {
+        // Keep noexcept contract: errors during teardown are intentionally ignored.
+    }
 }
 
 // ---------------------------------------------------------------------------

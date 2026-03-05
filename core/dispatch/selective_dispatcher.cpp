@@ -1,301 +1,254 @@
 /**
  * @file selective_dispatcher.cpp
- * @brief AXIOM v3.0 - Intelligent Selective Dispatcher Implementation
- * 
- * Advanced operation routing system that selects optimal computational engines
- * based on expression complexity, data size, and performance characteristics.
+ * @brief Implementation of the SelectiveDispatcher using Pimpl architecture.
  */
 
 #include "selective_dispatcher.h"
-#include "../../include/dynamic_calc.h"
-#ifdef ENABLE_EIGEN
-#include "../../include/eigen_engine.h"
-#endif
-#ifdef ENABLE_PYTHON_FFI
-#include "../../include/python_engine.h"
-#endif
+#include "dynamic_calc.h"
 #include <iostream>
-#include <chrono>
 #include <sstream>
 #include <algorithm>
-#include <cmath>
+#include <regex>
+#include <chrono>
+#include <cctype>
+
+#ifdef ENABLE_EIGEN
+#include "eigen_engine.h"
+#endif
+
+#ifdef ENABLE_NANOBIND
+#include "nanobind_interface.h"
+#endif
 
 namespace AXIOM {
 
-SelectiveDispatcher::SelectiveDispatcher() 
-    : preferred_engine_(ComputeEngine::Auto)
-    , fallback_enabled_(true)
-    , performance_threshold_ms_(100.0)
-    , learning_enabled_(true) {
+namespace {
+
+std::string ToLower(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+
+bool RequiresSquareMatrix(const std::string& operation)
+{
+    return operation == "determinant" || operation == "det" ||
+           operation == "inverse" || operation == "inv" ||
+           operation == "eigenvalues" || operation == "eigvals" ||
+           operation == "trace";
+}
+
+CalcErr MapDispatchException(const std::exception& exception) {
+    const std::string message = ToLower(exception.what());
+
+    if (message.find("divide") != std::string::npos && message.find("zero") != std::string::npos) {
+        return CalcErr::DivideByZero;
+    }
+    if (message.find("parse") != std::string::npos ||
+        message.find("syntax") != std::string::npos ||
+        message.find("token") != std::string::npos) {
+        return CalcErr::ParseError;
+    }
+    if (message.find("negative") != std::string::npos && message.find("root") != std::string::npos) {
+        return CalcErr::NegativeRoot;
+    }
+    if (message.find("domain") != std::string::npos) {
+        return CalcErr::DomainError;
+    }
+    if (message.find("argument") != std::string::npos ||
+        message.find("mismatch") != std::string::npos ||
+        message.find("invalid") != std::string::npos) {
+        return CalcErr::ArgumentMismatch;
+    }
+    if (message.find("overflow") != std::string::npos) {
+        return CalcErr::NumericOverflow;
+    }
+    if (message.find("memory") != std::string::npos ||
+        message.find("alloc") != std::string::npos ||
+        message.find("bad_alloc") != std::string::npos) {
+        return CalcErr::MemoryExhausted;
+    }
+
+    return CalcErr::OperationNotFound;
+}
+
+} // namespace
+
+struct SelectiveDispatcher::Impl {
+    ComputeEngine preferred_engine_{ComputeEngine::Auto};
+    bool fallback_enabled_{true};
+    double performance_threshold_ms_{100.0};
+    bool learning_enabled_{true};
     
-    // Engine instances temporarily disabled until classes are fully implemented
-    engine_availability_[ComputeEngine::Native] = true;
-    engine_availability_[ComputeEngine::Eigen] = false;  // Enable when Eigen is available
-    engine_availability_[ComputeEngine::Python] = false; // Enable when nanobind is available
+    DispatchMetrics last_metrics_{};
+    std::map<ComputeEngine, bool> engine_availability_{};
+    std::map<ComputeEngine, std::map<std::string, EnginePerformance>> engine_performance_{};
     
-// Eigen engine temporarily disabled until EigenEngine class is implemented
+#ifdef ENABLE_EIGEN
+    std::unique_ptr<EigenEngine> eigen_engine_;
+#endif
+
+#ifdef ENABLE_NANOBIND
+    std::unique_ptr<NanobindInterface> nanobind_interface_;
+#endif
+};
+
+std::unique_ptr<SelectiveDispatcher> g_dispatcher;
+
+SelectiveDispatcher::SelectiveDispatcher() : pimpl_(std::make_unique<Impl>()) {
+    pimpl_->engine_availability_[ComputeEngine::Native] = true;
+
 #ifdef ENABLE_EIGEN
     try {
-        eigen_engine_ = std::make_unique<EigenEngine>();
-        engine_availability_[ComputeEngine::Eigen] = true;
-        std::cout << "Eigen CPU Engine initialized\n";
+        pimpl_->eigen_engine_ = std::make_unique<EigenEngine>();
+        pimpl_->engine_availability_[ComputeEngine::Eigen] = true;
     } catch (const std::exception& e) {
-        std::cerr << "Eigen Engine initialization failed: " << e.what() << "\n";
+        pimpl_->engine_availability_[ComputeEngine::Eigen] = false;
+        std::cerr << "[AXIOM] EigenEngine initialization failed: " << e.what() << '\n';
     }
 #endif
 
-// Initialize Python engine if FFI is enabled
-#ifdef ENABLE_PYTHON_FFI
+#ifdef ENABLE_NANOBIND
     try {
-        python_engine_ = std::make_unique<::PythonEngine>();
-        if (python_engine_ && python_engine_->IsInitialized()) {
-            engine_availability_[ComputeEngine::Python] = true;
-            std::cout << "Python Engine initialized" << "\n";
-        } else {
-            engine_availability_[ComputeEngine::Python] = false;
-        }
+        pimpl_->nanobind_interface_ = std::make_unique<NanobindInterface>();
+        pimpl_->engine_availability_[ComputeEngine::Python] = true;
     } catch (const std::exception& e) {
-        engine_availability_[ComputeEngine::Python] = false;
-        std::cerr << "Python Engine initialization failed: " << e.what() << "\n";
+        pimpl_->engine_availability_[ComputeEngine::Python] = false;
+        std::cerr << "[AXIOM] NanobindInterface initialization failed: " << e.what() << '\n';
     }
 #endif
 }
 
 SelectiveDispatcher::~SelectiveDispatcher() = default;
 
-EngineResult SelectiveDispatcher::DispatchOperation(const std::string& expression,
-                                                   OperationComplexity complexity) {
-    auto start_time = std::chrono::high_resolution_clock::now();
-    
-    // 1. Analyze expression and determine optimal engine
-    ComputeEngine selected_engine = SelectOptimalEngine(expression, complexity);
-    
-    // 2. Execute on selected engine with fallback
-    EngineResult result = ExecuteWithFallback(expression, selected_engine);
-    
-    // 3. Record performance metrics
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-    
-    RecordMetrics(selected_engine, expression, complexity, duration.count() / 1000.0);
-    
-    return result;
+void SelectiveDispatcher::SetPreferredEngine(ComputeEngine engine) {
+    pimpl_->preferred_engine_ = engine;
 }
 
-ComputeEngine SelectiveDispatcher::SelectOptimalEngine(const std::string& expression, 
-                                                      OperationComplexity complexity) {
-    // Future implementation: analyze expression characteristics & availability
-    
-    // Override for preferred engine if specified
-    if (preferred_engine_ != ComputeEngine::Auto && 
-        IsEngineAvailable(preferred_engine_)) {
-        return preferred_engine_;
-    }
-    
-    // Analyze expression characteristics
-    size_t data_size = EstimateDataSize(expression);
-    bool has_matrix_ops = HasMatrixOperations(expression);
-    bool has_symbolic_ops = HasSymbolicOperations(expression);
-    
-    // Engine selection logic based on operation type and complexity
-    if (has_symbolic_ops && IsEngineAvailable(ComputeEngine::Python)) {
-        return ComputeEngine::Python;  // Python for symbolic math
-    }
-    
-    if (has_matrix_ops && data_size > 1000 && IsEngineAvailable(ComputeEngine::Eigen)) {
-        return ComputeEngine::Eigen;   // Eigen for large matrix operations
-    }
-    
-    if (complexity >= OperationComplexity::Complex && IsEngineAvailable(ComputeEngine::Eigen)) {
-        return ComputeEngine::Eigen;   // Eigen for complex numerical computations
-    }
-    
-    
-    // Default to native engine for simple operations
-    return ComputeEngine::Native;
+void SelectiveDispatcher::EnableFallback(bool enable) {
+    pimpl_->fallback_enabled_ = enable;
 }
 
-EngineResult SelectiveDispatcher::ExecuteWithFallback(const std::string& expression,
-                                                     ComputeEngine engine) {
+EngineResult SelectiveDispatcher::DispatchOperation(const std::string& operation,
+                                                   const std::vector<std::string>& args,
+                                                   ComputeEngine preferred_engine) {
+    auto start = std::chrono::high_resolution_clock::now();
+
+    ComputeEngine engine = (preferred_engine == ComputeEngine::Auto)
+        ? pimpl_->preferred_engine_ : preferred_engine;
+
+    // Always ensure we have a working engine — fall back to Native if requested one unavailable
+    bool engine_ok = pimpl_->engine_availability_.count(engine) &&
+                     pimpl_->engine_availability_.at(engine);
+    if (!engine_ok || engine == ComputeEngine::Auto) {
+        engine = ComputeEngine::Native;
+    }
+
     EngineResult result;
-    
     try {
-        switch (engine) {
-            case ComputeEngine::Native:
-                result = ExecuteNative(expression);
-                break;
-                
-            case ComputeEngine::Eigen:
-#ifdef ENABLE_EIGEN
-                if (eigen_engine_) {
-                    // TODO: Integrate expression parsing to use EigenEngine.
-                    // For now, fallback to native calculation until mapping exists.
-                }
-#endif
-                // Fallback to native
-                result = ExecuteNative(expression);
-                break;
-                
-            case ComputeEngine::Python:
-#ifdef ENABLE_PYTHON_FFI
-                if (python_engine_ && python_engine_->IsInitialized()) {
-                    // Try to evaluate expression directly in Python
-                    result = python_engine_->EvaluatePython(expression);
-                    break;
-                }
-#endif
-                // Fallback to native when Python unavailable
-                result = ExecuteNative(expression);
-                break;
-                
-            default:
-                result = ExecuteNative(expression);
-                break;
+        thread_local DynamicCalc native;
+        std::string full_op = operation;
+        for (const auto& arg : args) {
+            full_op += ' ';
+            full_op += arg;
         }
+        result = native.Evaluate(full_op);
     } catch (const std::exception& e) {
-        // Fallback on any engine failure
-        if (fallback_enabled_ && engine != ComputeEngine::Native) {
-            std::cerr << "Engine " << EngineToString(engine) << " failed, falling back to Native\n";
-            result = ExecuteNative(expression);
-        } else {
-            result = {{}, {CalcErr::OperationNotFound}};
-        }
+        std::cerr << "[AXIOM Dispatch] Evaluation exception: " << e.what() << '\n';
+        result = CreateErrorResult(MapDispatchException(e));
     }
-    
+
+    auto end = std::chrono::high_resolution_clock::now();
+    pimpl_->last_metrics_.execution_time_ms =
+        std::chrono::duration<double, std::milli>(end - start).count();
+    pimpl_->last_metrics_.selected_engine  = engine;
+    pimpl_->last_metrics_.operation_name   = operation;
+    pimpl_->last_metrics_.fallback_used    = (engine != preferred_engine &&
+                                              preferred_engine != ComputeEngine::Auto);
     return result;
 }
 
-EngineResult SelectiveDispatcher::ExecuteNative(const std::string& expression) {
-    // Use the existing AXIOM native engine
-    DynamicCalc calc;
-    return calc.calculate(expression, CalculationMode::ALGEBRAIC);
-}
+EngineResult SelectiveDispatcher::DispatchMatrixOperation(const std::string& operation,
+                                                         Eigen::Ref<const Eigen::MatrixXd> matrix_data) {
+#ifdef ENABLE_EIGEN
+    if (pimpl_->engine_availability_[ComputeEngine::Eigen] && pimpl_->eigen_engine_) {
+        // Convert Eigen::Ref to AXIOM::Matrix (std::vector<std::vector<double>>)
+        const int rows = static_cast<int>(matrix_data.rows());
+        const int cols = static_cast<int>(matrix_data.cols());
 
-bool SelectiveDispatcher::IsEngineAvailable(ComputeEngine engine) const {
-    auto it = engine_availability_.find(engine);
-    return (it != engine_availability_.end()) && it->second;
-}
+        if (RequiresSquareMatrix(operation) && rows != cols) {
+            return CreateErrorResult(CalcErr::ArgumentMismatch);
+        }
 
-size_t SelectiveDispatcher::EstimateDataSize(const std::string& expression) const {
-    // Simple heuristic for data size estimation
-    size_t base_size = expression.length();
-    
-    // Count matrix/vector indicators
-    size_t matrix_count = std::count(expression.begin(), expression.end(), '[');
-    size_t comma_count = std::count(expression.begin(), expression.end(), ',');
-    
-    return base_size + (matrix_count * 100) + (comma_count * 10);
-}
+        AXIOM::Matrix mat(rows, std::vector<double>(cols));
+        for (int r = 0; r < rows; ++r)
+            for (int c = 0; c < cols; ++c)
+                mat[r][c] = matrix_data(r, c);
 
-bool SelectiveDispatcher::HasMatrixOperations(const std::string& expression) const {
-    return (expression.find('[') != std::string::npos) ||
-           (expression.find("matrix") != std::string::npos) ||
-           (expression.find("solve") != std::string::npos) ||
-           (expression.find("linear") != std::string::npos);
-}
+        if (operation == "determinant" || operation == "det") {
+            auto eigen_mat = pimpl_->eigen_engine_->CreateMatrix(mat);
+            double det = pimpl_->eigen_engine_->Determinant(eigen_mat);
+            return CreateSuccessResult(det);
+        }
 
-bool SelectiveDispatcher::HasSymbolicOperations(const std::string& expression) const {
-    return (expression.find("symbolic") != std::string::npos) ||
-           (expression.find("derivative") != std::string::npos) ||
-           (expression.find("integrate") != std::string::npos) ||
-           (expression.find("expand") != std::string::npos) ||
-           (expression.find("factor") != std::string::npos);
-}
+        if (operation == "transpose" || operation == "trans") {
+            auto eigen_mat = pimpl_->eigen_engine_->CreateMatrix(mat);
+            auto t = pimpl_->eigen_engine_->Transpose(eigen_mat);
+            AXIOM::Matrix out(static_cast<size_t>(t.rows()), std::vector<double>(static_cast<size_t>(t.cols()), 0.0));
+            for (int r = 0; r < t.rows(); ++r) {
+                for (int c = 0; c < t.cols(); ++c) {
+                    out[static_cast<size_t>(r)][static_cast<size_t>(c)] = t(r, c);
+                }
+            }
+            return CreateSuccessResult(std::move(out));
+        }
 
-void SelectiveDispatcher::RecordMetrics(ComputeEngine engine, 
-                                       const std::string& expression,
-                                       OperationComplexity complexity,
-                                       double execution_time_ms) {
-    // Store performance data for learning
-    last_metrics_.selected_engine = engine;
-    last_metrics_.operation_name = expression.substr(0, 20); // First 20 chars
-    last_metrics_.complexity = complexity;
-    last_metrics_.execution_time_ms = execution_time_ms;
-    last_metrics_.decision_time_us = 0.1; // Minimal overhead
-    
-    // Update engine performance history
-    auto& perf = engine_performance_[engine][expression.substr(0, 10)];
-    perf.operations_count++;
-    perf.avg_execution_time_ms = (perf.avg_execution_time_ms * (perf.operations_count - 1) + 
-                                 execution_time_ms) / perf.operations_count;
-    perf.engine_type = engine;
-}
+        if (operation == "inverse" || operation == "inv") {
+            auto eigen_mat = pimpl_->eigen_engine_->CreateMatrix(mat);
+            auto inv = pimpl_->eigen_engine_->Inverse(eigen_mat);
+            AXIOM::Matrix out(static_cast<size_t>(inv.rows()), std::vector<double>(static_cast<size_t>(inv.cols()), 0.0));
+            for (int r = 0; r < inv.rows(); ++r) {
+                for (int c = 0; c < inv.cols(); ++c) {
+                    out[static_cast<size_t>(r)][static_cast<size_t>(c)] = inv(r, c);
+                }
+            }
+            return CreateSuccessResult(std::move(out));
+        }
 
-std::string SelectiveDispatcher::EngineToString(ComputeEngine engine) const {
-    switch (engine) {
-        case ComputeEngine::Native: return "Native C++";
-        case ComputeEngine::Eigen: return "Eigen CPU";
-        case ComputeEngine::Python: return "Python/nanobind";
-        case ComputeEngine::Auto: return "Auto-Select";
-        default: return "Unknown";
+        if (operation == "eigenvalues" || operation == "eigvals") {
+            auto eigen_mat = pimpl_->eigen_engine_->CreateMatrix(mat);
+            auto decomposition = pimpl_->eigen_engine_->EigenDecomposition(eigen_mat);
+            const auto& eigenvalues = decomposition.first;
+            AXIOM::Vector out;
+            out.reserve(static_cast<size_t>(eigenvalues.size()));
+            for (int i = 0; i < eigenvalues.size(); ++i) {
+                out.push_back(eigenvalues(i));
+            }
+            return CreateSuccessResult(std::move(out));
+        }
+
+        if (operation == "trace") {
+            double trace = 0.0;
+            for (int i = 0; i < rows; ++i) {
+                trace += mat[static_cast<size_t>(i)][static_cast<size_t>(i)];
+            }
+            return CreateSuccessResult(trace);
+        }
+
+        return CreateErrorResult(CalcErr::OperationNotFound);
     }
-}
-
-DispatchMetrics SelectiveDispatcher::GetLastMetrics() const {
-    return last_metrics_;
+#endif
+    return CreateErrorResult(CalcErr::OperationNotFound);
 }
 
 std::string SelectiveDispatcher::GetPerformanceReport() const {
-    std::ostringstream report;
-    report << "🎯 AXIOM v3.0 - Selective Dispatcher Performance Report\n";
-    report << "=====================================================\n\n";
-    
-    report << "🔧 Engine Availability:\n";
-    for (const auto& [engine, available] : engine_availability_) {
-        report << "  " << (available ? "✅" : "❌") << " " 
-               << EngineToString(engine) << "\n";
-    }
-    
-    report << "\n📊 Performance Metrics:\n";
-    for (const auto& [engine, ops] : engine_performance_) {
-        if (ops.empty()) continue;
-        
-        report << "  " << EngineToString(engine) << ":\n";
-        size_t total_ops = 0;
-        double avg_time = 0.0;
-        
-        for (const auto& [op, perf] : ops) {
-            total_ops += perf.operations_count;
-            avg_time += perf.avg_execution_time_ms * perf.operations_count;
-        }
-        
-        if (total_ops > 0) {
-            avg_time /= total_ops;
-            report << "    Operations: " << total_ops << "\n";
-            report << "    Avg Time: " << avg_time << "ms\n";
-            
-            // Performance classification
-            if (avg_time < 1.0) {
-                report << "    Grade: 🏎️ SENNA SPEED\n";
-            } else if (avg_time < 10.0) {
-                report << "    Grade: 🏁 F1 SPEED\n";
-            } else if (avg_time < 100.0) {
-                report << "    Grade: 🚗 GOOD SPEED\n";
-            } else {
-                report << "    Grade: 🐌 NEEDS OPTIMIZATION\n";
-            }
-        }
-        report << "\n";
-    }
-    
-    report << "📈 Last Operation:\n";
-    report << "  Engine: " << EngineToString(last_metrics_.selected_engine) << "\n";
-    report << "  Time: " << last_metrics_.execution_time_ms << "ms\n";
-    report << "  Complexity: " << static_cast<int>(last_metrics_.complexity) << "\n";
-    
-    return report.str();
-}
-
-void SelectiveDispatcher::SetPreferredEngine(ComputeEngine engine) {
-    preferred_engine_ = engine;
-}
-
-void SelectiveDispatcher::EnableLearning(bool enable) {
-    learning_enabled_ = enable;
-}
-
-void SelectiveDispatcher::SetPerformanceThreshold(double threshold_ms) {
-    performance_threshold_ms_ = threshold_ms;
+    std::ostringstream oss;
+    oss << "[AXIOM Dispatch Report]\n";
+    oss << "  Last operation : " << pimpl_->last_metrics_.operation_name << '\n';
+    oss << "  Engine used    : " << static_cast<int>(pimpl_->last_metrics_.selected_engine) << '\n';
+    oss << "  Exec time (ms) : " << pimpl_->last_metrics_.execution_time_ms << '\n';
+    oss << "  Fallback used  : " << (pimpl_->last_metrics_.fallback_used ? "yes" : "no") << '\n';
+    return oss.str();
 }
 
 } // namespace AXIOM

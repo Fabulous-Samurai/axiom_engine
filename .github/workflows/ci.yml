@@ -35,7 +35,7 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential g++ python3 python3-dev
+        sudo apt-get install -y build-essential g++ python3 python3-dev libnuma-dev
 
     - name: Install dependencies (macOS)
       if: matrix.os == 'macos-latest'
@@ -165,7 +165,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential g++ lcov python3 python3-dev
+        sudo apt-get install -y build-essential g++ lcov python3 python3-dev libnuma-dev
 
     - name: Configure with coverage flags
       run: |
@@ -206,7 +206,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential g++ python3 python3-dev
+        sudo apt-get install -y build-essential g++ python3 python3-dev libnuma-dev
 
     - name: Configure CMake
       run: |
@@ -218,7 +218,7 @@ jobs:
     - name: Run benchmarks
       working-directory: build
       run: |
-        ./benchmark_suite > benchmark-results.txt
+        ./axiom_benchmark > benchmark-results.txt
 
     - name: Upload benchmark results
       uses: actions/upload-artifact@v3
@@ -248,14 +248,14 @@ jobs:
       run: |
         cd build
         tar -czf axiom-engine-${{ matrix.os }}.tar.gz \
-          giga_test_suite benchmark_suite edge_case_suite \
+          axiom run_tests giga_test_suite axiom_benchmark \
           ../include ../docs ../README.md ../LICENSE
 
     - name: Package Release (Windows)
       if: matrix.os == 'windows-latest'
       run: |
         cd build
-        7z a axiom-engine-windows.zip giga_test_suite.exe benchmark_suite.exe edge_case_suite.exe ../include ../docs ../README.md ../LICENSE
+        7z a axiom-engine-windows.zip axiom.exe run_tests.exe giga_test_suite.exe axiom_benchmark.exe ../include ../docs ../README.md ../LICENSE
 
     - name: Upload Release Asset
       uses: actions/upload-release-asset@v1

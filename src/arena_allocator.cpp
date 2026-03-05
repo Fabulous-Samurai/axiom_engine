@@ -16,11 +16,176 @@
 #else
     #include <sys/mman.h>
     #include <unistd.h>
+#endif
+
+#ifdef __linux__
     #include <numa.h>
     #include <numaif.h>
 #endif
 
 namespace AXIOM {
+
+// ============================================================================
+// HarmonicArena Implementation
+// ============================================================================
+
+HarmonicArena::HarmonicArena(size_t block_size)
+    : block_size_(std::max<size_t>(block_size, 1024 * 1024))
+{
+    ArenaBlock* first = new ArenaBlock(block_size_);
+    first->is_ready.store(true, std::memory_order_release);
+
+    ArenaBlock* spare = new ArenaBlock(block_size_);
+    spare->is_ready.store(true, std::memory_order_release);
+
+    current_block_.store(first, std::memory_order_release);
+    spare_block_.store(spare, std::memory_order_release);
+
+    maintenance_thread_ = std::jthread([this](std::stop_token st) {
+        maintenance_worker(st);
+    });
+}
+
+HarmonicArena::~HarmonicArena() {
+    // jthread destructor requests stop and joins.
+    maintenance_thread_.request_stop();
+
+    std::unordered_set<ArenaBlock*> unique;
+
+    if (ArenaBlock* cur = current_block_.exchange(nullptr, std::memory_order_acq_rel)) {
+        unique.insert(cur);
+    }
+    if (ArenaBlock* spare = spare_block_.exchange(nullptr, std::memory_order_acq_rel)) {
+        unique.insert(spare);
+    }
+
+    ArenaBlock* node = pool_head_.exchange(nullptr, std::memory_order_acq_rel);
+    while (node) {
+        ArenaBlock* next = node->next_in_pool.load(std::memory_order_relaxed);
+        unique.insert(node);
+        node = next;
+    }
+
+    for (ArenaBlock* block : unique) {
+        delete block;
+    }
+}
+
+void* HarmonicArena::allocate(size_t bytes) {
+    if (bytes == 0) {
+        return nullptr;
+    }
+
+    const size_t aligned = align_size(bytes, CACHE_LINE_SIZE);
+
+    for (;;) {
+        ArenaBlock* active = current_block_.load(std::memory_order_acquire);
+        if (!active) {
+            return nullptr;
+        }
+
+        const size_t old_offset = active->offset.fetch_add(aligned, std::memory_order_relaxed);
+        if (old_offset + aligned <= active->capacity) {
+            return active->storage.get() + old_offset;
+        }
+
+        // Block exhausted; switch active block and retry.
+        return switch_and_retry(aligned);
+    }
+}
+
+void* HarmonicArena::switch_and_retry(size_t bytes) {
+    for (;;) {
+        ArenaBlock* old = current_block_.load(std::memory_order_acquire);
+        if (!old) {
+            return nullptr;
+        }
+
+        ArenaBlock* next = spare_block_.exchange(nullptr, std::memory_order_acq_rel);
+        if (!next) {
+            std::this_thread::yield();
+            continue;
+        }
+
+        while (!next->is_ready.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+
+        next->offset.store(0, std::memory_order_release);
+
+        if (current_block_.compare_exchange_strong(old, next,
+                                                   std::memory_order_acq_rel,
+                                                   std::memory_order_acquire)) {
+            old->is_ready.store(false, std::memory_order_release);
+            old->offset.store(0, std::memory_order_release);
+            push_pool(old);
+
+            const size_t old_offset = next->offset.fetch_add(bytes, std::memory_order_relaxed);
+            if (old_offset + bytes <= next->capacity) {
+                return next->storage.get() + old_offset;
+            }
+            // Extremely large request; rotate again.
+            continue;
+        }
+
+        // Another thread switched first; restore/recycle next block.
+        ArenaBlock* expected_null = nullptr;
+        if (!spare_block_.compare_exchange_strong(expected_null, next,
+                                                  std::memory_order_release,
+                                                  std::memory_order_relaxed)) {
+            push_pool(next);
+        }
+    }
+}
+
+void HarmonicArena::push_pool(ArenaBlock* block) {
+    if (!block) {
+        return;
+    }
+    ArenaBlock* head = pool_head_.load(std::memory_order_relaxed);
+    do {
+        block->next_in_pool.store(head, std::memory_order_relaxed);
+    } while (!pool_head_.compare_exchange_weak(head, block,
+                                                std::memory_order_release,
+                                                std::memory_order_relaxed));
+}
+
+HarmonicArena::ArenaBlock* HarmonicArena::pop_pool() {
+    ArenaBlock* head = pool_head_.load(std::memory_order_acquire);
+    while (head) {
+        ArenaBlock* next = head->next_in_pool.load(std::memory_order_relaxed);
+        if (pool_head_.compare_exchange_weak(head, next,
+                                             std::memory_order_acq_rel,
+                                             std::memory_order_acquire)) {
+            head->next_in_pool.store(nullptr, std::memory_order_relaxed);
+            return head;
+        }
+    }
+    return nullptr;
+}
+
+void HarmonicArena::maintenance_worker(std::stop_token stop_token) {
+    while (!stop_token.stop_requested()) {
+        // Prepare a spare block only when spare slot is empty.
+        if (spare_block_.load(std::memory_order_acquire) == nullptr) {
+            ArenaBlock* to_clean = pop_pool();
+            if (to_clean) {
+                std::memset(to_clean->storage.get(), 0, to_clean->capacity);
+                to_clean->offset.store(0, std::memory_order_release);
+                to_clean->is_ready.store(true, std::memory_order_release);
+
+                ArenaBlock* expected_null = nullptr;
+                if (!spare_block_.compare_exchange_strong(expected_null, to_clean,
+                                                          std::memory_order_release,
+                                                          std::memory_order_relaxed)) {
+                    push_pool(to_clean);
+                }
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
 
 // ============================================================================
 // MemoryArena Implementation
@@ -317,7 +482,7 @@ MemoryArena::ArenaStats MemoryArena::get_stats() const {
     return stats;
 }
 
-#ifndef _WIN32
+#ifdef __linux__
 bool MemoryArena::set_numa_policy(int node) {
     if (numa_available() < 0) {
         return false;
@@ -358,6 +523,11 @@ int MemoryArena::get_numa_node() const {
 thread_local size_t PoolManager::preferred_pool_index_ = SIZE_MAX;
 
 PoolManager::PoolManager() {
+#ifdef ENABLE_HARMONIC_ARENA
+    // Conservative block size to keep test/dev memory footprint moderate.
+    harmonic_arena_ = std::make_unique<HarmonicArena>(32 * 1024 * 1024);
+#endif
+
     // Initialize default pools
     add_pool(PoolType::SMALL_OBJECTS, 16 * 1024 * 1024);   // 16MB for small objects
     add_pool(PoolType::MEDIUM_OBJECTS, 64 * 1024 * 1024);  // 64MB for medium objects
@@ -368,6 +538,15 @@ PoolManager::PoolManager() {
 PoolManager::~PoolManager() = default;
 
 void* PoolManager::allocate(size_t size, size_t alignment) {
+#ifdef ENABLE_HARMONIC_ARENA
+    if (harmonic_arena_ && size <= HARMONIC_FAST_PATH_LIMIT && alignment <= HarmonicArena::CACHE_LINE_SIZE) {
+        if (void* ptr = harmonic_arena_->allocate(size)) {
+            harmonic_allocations_.fetch_add(1, std::memory_order_relaxed);
+            return ptr;
+        }
+    }
+#endif
+
     PoolType pool_type = classify_allocation(size);
     size_t pool_index = select_optimal_pool(pool_type);
     
@@ -422,7 +601,7 @@ size_t PoolManager::add_pool(PoolType type, size_t arena_size, int numa_node) {
     pool.arena = std::make_unique<MemoryArena>(arena_size, true);
     pool.active_allocations.store(0);
     
-#ifndef _WIN32
+#ifdef __linux__
     if (numa_node >= 0) {
         pool.arena->set_numa_policy(numa_node);
     }

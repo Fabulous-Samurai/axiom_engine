@@ -124,14 +124,14 @@ private:
 
 public:
     explicit DaemonEngine(const std::string& pipe_name = "axiom_daemon");
-    ~DaemonEngine();
+    ~DaemonEngine() noexcept;
 
     // Prevent copying and moving of the core daemon
     DaemonEngine(const DaemonEngine&) = delete;
     DaemonEngine& operator=(const DaemonEngine&) = delete;
 
     bool start();
-    void stop();
+    void stop() noexcept;
     bool is_running() const { return running_.load(std::memory_order_acquire); }
     DaemonStatus get_status() const { return status_.load(std::memory_order_acquire); }
 

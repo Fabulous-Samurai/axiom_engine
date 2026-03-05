@@ -15,8 +15,12 @@
 #include <memory>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
 #include <atomic>
+#include <thread>
+#include <stop_token>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -33,6 +37,55 @@
 #endif
 
 namespace AXIOM {
+
+/**
+ * @brief Harmonic lock-free arena with background recycling
+ *
+ * This arena complements MemoryArena for ultra-low-latency burst allocation
+ * workloads where deallocation is handled through block rotation.
+ */
+class HarmonicArena {
+public:
+    static constexpr size_t CACHE_LINE_SIZE = 64;
+    static constexpr size_t DEFAULT_BLOCK_SIZE = 512ull * 1024ull * 1024ull; // 512MB
+
+private:
+    struct alignas(CACHE_LINE_SIZE) ArenaBlock {
+        std::unique_ptr<char[]> storage;
+        size_t capacity;
+        std::atomic<size_t> offset{0};
+        std::atomic<bool> is_ready{false};
+        std::atomic<ArenaBlock*> next_in_pool{nullptr};
+
+        explicit ArenaBlock(size_t cap) : storage(std::make_unique<char[]>(cap)), capacity(cap) {}
+    };
+
+    alignas(CACHE_LINE_SIZE) std::atomic<ArenaBlock*> current_block_{nullptr};
+    alignas(CACHE_LINE_SIZE) std::atomic<ArenaBlock*> spare_block_{nullptr};
+    alignas(CACHE_LINE_SIZE) std::atomic<ArenaBlock*> pool_head_{nullptr};
+
+    std::jthread maintenance_thread_;
+    size_t block_size_;
+
+public:
+    explicit HarmonicArena(size_t block_size = DEFAULT_BLOCK_SIZE);
+    ~HarmonicArena();
+
+    HarmonicArena(const HarmonicArena&) = delete;
+    HarmonicArena& operator=(const HarmonicArena&) = delete;
+
+    void* allocate(size_t bytes);
+
+private:
+    static size_t align_size(size_t size, size_t alignment) {
+        return (size + alignment - 1) & ~(alignment - 1);
+    }
+
+    void push_pool(ArenaBlock* block);
+    ArenaBlock* pop_pool();
+    void* switch_and_retry(size_t bytes);
+    void maintenance_worker(std::stop_token stop_token);
+};
 
 /**
  * @brief High-Performance Memory Arena
@@ -121,7 +174,7 @@ public:
     void prefault_pages(void* ptr, size_t size);
     
     // NUMA awareness (Linux only)
-#ifndef _WIN32
+#ifdef __linux__
     bool set_numa_policy(int node);
     int get_numa_node() const;
 #endif
@@ -171,6 +224,12 @@ private:
     std::vector<PoolInfo> pools_;
     std::unordered_map<void*, size_t> allocation_map_;
     std::mutex allocation_map_mutex_;
+
+#ifdef ENABLE_HARMONIC_ARENA
+    std::unique_ptr<HarmonicArena> harmonic_arena_;
+    std::atomic<size_t> harmonic_allocations_{0};
+    static constexpr size_t HARMONIC_FAST_PATH_LIMIT = 1024;
+#endif
     
     // Thread-local pool caching
     thread_local static size_t preferred_pool_index_;
