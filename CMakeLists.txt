@@ -20,6 +20,7 @@ option(AXIOM_ENABLE_EMBEDDED_PYTHON_ENGINE "Build embedded PythonEngine/PythonPa
 option(AXIOM_ENABLE_CXX20_MODULES "Enable incremental C++20 modules migration (experimental)" OFF)
 option(AXIOM_ENABLE_NANOBIND "Enable nanobind FFI integration" ON)
 option(AXIOM_ENABLE_DOXYGEN "Enable Doxygen API documentation target" OFF)
+option(AXIOM_ENABLE_HARMONIC_ARENA "Enable HarmonicArena lock-free fast-path backend" OFF)
 set(AXIOM_PY_REQUIREMENTS "${CMAKE_SOURCE_DIR}/requirements-optional.txt")
 
 set(AXIOM_CXX20_MODULES_ACTIVE OFF)
@@ -188,6 +189,11 @@ function(axiom_apply_simd_flags target_name)
         target_compile_definitions(${target_name} PRIVATE AXIOM_SIMD_AVX512_ENABLED EIGEN_VECTORIZE_AVX512)
     endif()
 endfunction()
+
+if(AXIOM_ENABLE_HARMONIC_ARENA)
+    add_compile_definitions(ENABLE_HARMONIC_ARENA)
+    message(STATUS "HarmonicArena backend enabled")
+endif()
 
 
 include_directories(

@@ -1,7 +1,11 @@
 # Optional Python dependencies for AXIOM GUI features
 # Install with: pip install -r requirements-optional.txt
 numpy>=1.24,<1.28
-scipy>=1.11,<1.13
 matplotlib>=3.7,<3.10
-pandas>=2.0,<2.3
-sympy>=1.12,<1.13
+
+# Qt GUI dependency notes:
+# - CPython on Windows/Linux/macOS: install via pip (PySide6)
+# - MinGW/MSYS2 Python (e.g. mingw_x86_64_ucrt_gnu): PyPI wheels are unavailable
+#   and pip install PySide6 will fail with "No matching distribution found".
+#   In that case install via pacman instead:
+#   C:/msys64/usr/bin/pacman.exe -S mingw-w64-x86_64-pyside6
