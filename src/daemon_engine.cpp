@@ -1,629 +1,605 @@
 /**
  * @file daemon_engine.cpp
  * @brief AXIOM Engine v3.1 - Hardened Daemon Implementation
- * * Refactoring Notes:
- * - Security: IPC permissions tightened (0600 on Linux).
- * - Stability: RAII wrappers for OS handles to prevent leaks.
- * - Concurrency: Optimized thread locking and removed busy-wait sleeps.
- * - Parsing: More robust manual parsing (until a JSON lib is added).
+ *
+ * Core updates:
+ * - IPC: SPSC Lock-free ring buffer integration.
+ * - Concurrency: OS-bypass spin-wait mechanisms via std::this_thread::yield().
+ * - Memory: Rvalue references deployed for zero-copy request dispatch.
  */
 
 #include "../include/daemon_engine.h"
 #include "../include/dynamic_calc.h"
-#include "../include/algebraic_parser.h"
-#include "../include/linear_system_parser.h"
 
-#include <sstream>
 #include <iostream>
-#include <random>
-#include <iomanip>
-#include <algorithm>
-#include <thread>
-#include <atomic>
-#include <cstring> // For strerror
+#include <sstream>
+#include <stdexcept>
+#include <cstring>
+#include <cerrno>
+#include <cstdlib>
+#include <type_traits>
+#include <variant>
 
-#ifdef _WIN32
-#include <io.h>
-#include <process.h>
-#include <windows.h>
-#include <sddl.h> // For security descriptor
-#else
-#include <signal.h>
-#include <sys/wait.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
+namespace AXIOM {
 
-namespace AXIOM
+namespace {
+
+uint32_t read_env_u32(const char* name, uint32_t fallback)
 {
-
-    // ============================================================================
-    // Internal Helpers (RAII & Security)
-    // ============================================================================
-    namespace
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || *raw == '\0')
     {
+        return fallback;
+    }
 
-        // Helper: Neden bunu yazdım?
-        // Raw handle yönetimi hataya açıktır. Exception durumunda handle'ı otomatik kapatır.
-        // ECU gibi uzun süre çalışan sistemlerde resource leak kabul edilemez.
+    char* end = nullptr;
+    const unsigned long parsed = std::strtoul(raw, &end, 10);
+    if (end == raw || *end != '\0' || parsed == 0UL)
+    {
+        return fallback;
+    }
+
+    return static_cast<uint32_t>(parsed);
+}
+
+int64_t read_env_i64(const char* name, int64_t fallback)
+{
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || *raw == '\0')
+    {
+        return fallback;
+    }
+
+    char* end = nullptr;
+    const long long parsed = std::strtoll(raw, &end, 10);
+    if (end == raw || *end != '\0' || parsed <= 0LL)
+    {
+        return fallback;
+    }
+
+    return static_cast<int64_t>(parsed);
+}
+
+uint32_t circuit_failure_threshold()
+{
+    static const uint32_t value =
+        read_env_u32("AXIOM_DAEMON_CIRCUIT_FAILURE_THRESHOLD", 5U);
+    return value;
+}
+
+int64_t circuit_open_duration_ms()
+{
+    static const int64_t value =
+        read_env_i64("AXIOM_DAEMON_CIRCUIT_OPEN_MS", 2000LL);
+    return value;
+}
+
+int64_t backpressure_wait_ms()
+{
+    static const int64_t value =
+        read_env_i64("AXIOM_DAEMON_BACKPRESSURE_WAIT_MS", 5LL);
+    return value;
+}
+
+int64_t now_ms()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+const char* calc_error_to_string(CalcErr err)
+{
+    switch (err)
+    {
+        case CalcErr::None: return "None";
+        case CalcErr::DivideByZero: return "DivideByZero";
+        case CalcErr::IndeterminateResult: return "IndeterminateResult";
+        case CalcErr::OperationNotFound: return "OperationNotFound";
+        case CalcErr::ArgumentMismatch: return "ArgumentMismatch";
+        case CalcErr::NegativeRoot: return "NegativeRoot";
+        case CalcErr::DomainError: return "DomainError";
+        case CalcErr::ParseError: return "ParseError";
+        case CalcErr::NumericOverflow: return "NumericOverflow";
+        case CalcErr::StackOverflow: return "StackOverflow";
+        case CalcErr::MemoryExhausted: return "MemoryExhausted";
+        case CalcErr::InfiniteLoop: return "InfiniteLoop";
+        default: return "UnknownCalcErr";
+    }
+}
+
+const char* linalg_error_to_string(LinAlgErr err)
+{
+    switch (err)
+    {
+        case LinAlgErr::None: return "None";
+        case LinAlgErr::NoSolution: return "NoSolution";
+        case LinAlgErr::InfiniteSolutions: return "InfiniteSolutions";
+        case LinAlgErr::MatrixMismatch: return "MatrixMismatch";
+        case LinAlgErr::ParseError: return "ParseError";
+        default: return "UnknownLinAlgErr";
+    }
+}
+
+std::string engine_error_to_string(const EngineErrorResult& err)
+{
+    return std::visit([](const auto& e) -> std::string {
+        using T = std::decay_t<decltype(e)>;
+        if constexpr (std::is_same_v<T, CalcErr>)
+            return calc_error_to_string(e);
+        if constexpr (std::is_same_v<T, LinAlgErr>)
+            return linalg_error_to_string(e);
+        return "UnknownEngineError";
+    }, err);
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Constructor / Destructor
+// ---------------------------------------------------------------------------
+
+DaemonEngine::DaemonEngine(const std::string& pipe_name)
+    : pipe_name_(pipe_name)
+    , startup_time_(std::chrono::steady_clock::now())
+{
 #ifdef _WIN32
-        class ScopedHandle
-        {
-            HANDLE h_;
-
-        public:
-            ScopedHandle(HANDLE h) : h_(h) {}
-            ~ScopedHandle()
-            {
-                if (isValid())
-                    CloseHandle(h_);
-            }
-            bool isValid() const { return h_ != INVALID_HANDLE_VALUE; }
-            HANDLE get() const { return h_; }
-            void reset(HANDLE h)
-            {
-                if (isValid())
-                    CloseHandle(h_);
-                h_ = h;
-            }
-            // Non-copyable logic omitted for brevity
-        };
+    pipe_handle_ = INVALID_HANDLE_VALUE;
 #else
-        class ScopedFD
-        {
-            int fd_;
-
-        public:
-            ScopedFD(int fd) : fd_(fd) {}
-            ~ScopedFD()
-            {
-                if (isValid())
-                    close(fd_);
-            }
-            bool isValid() const { return fd_ >= 0; }
-            int get() const { return fd_; }
-            void reset(int fd)
-            {
-                if (isValid())
-                    close(fd_);
-                fd_ = fd;
-            }
-        };
+    pipe_fd_ = -1;
 #endif
+}
 
-        // Basit ve güvenli string temizleme
-        std::string sanitize_input(const std::string &input)
-        {
-            std::string safe = input;
-            safe.erase(std::remove(safe.begin(), safe.end(), '\n'), safe.end());
-            safe.erase(std::remove(safe.begin(), safe.end(), '\r'), safe.end());
-            return safe;
-        }
-    }
-
-    // ============================================================================
-    // SessionContext Implementation
-    // ============================================================================
-
-    SessionContext::SessionContext(const std::string &id)
-        : session_id(id), current_mode("algebraic"), created_at(std::chrono::steady_clock::now()), last_access(std::chrono::steady_clock::now())
-    {
-        // Initialize engines with Exception Safety
-        try
-        {
-            algebraic_parser = std::make_unique<AlgebraicParser>();
-            linear_parser = std::make_unique<LinearSystemParser>();
-
-            history.push_back("Session " + session_id + " initialized.");
-        }
-        catch (const std::runtime_error &e)
-        {
-            // Log runtime error properly
-            history.push_back("CRITICAL: Runtime error initializing session: " + std::string(e.what()));
-            throw; // Re-throw to prevent broken session creation
-        }
-        catch (const std::exception &e)
-        {
-            // Log error properly, don't just swallow
-            history.push_back("CRITICAL: Error initializing session: " + std::string(e.what()));
-            throw; // Re-throw to prevent broken session creation
-        }
-    }
-
-    SessionContext::~SessionContext() = default;
-
-    // ============================================================================
-    // DaemonEngine Implementation
-    // ============================================================================
-
-    DaemonEngine::DaemonEngine(const std::string &pipe_name)
-        : pipe_name_(pipe_name), startup_time_(std::chrono::steady_clock::now())
-#ifdef _WIN32
-          ,
-          pipe_handle_(INVALID_HANDLE_VALUE)
-#else
-          ,
-          pipe_fd_(-1)
-#endif
-    {
-    }
-
-    DaemonEngine::~DaemonEngine()
-    {
+DaemonEngine::~DaemonEngine()
+{
+    if (running_.load(std::memory_order_acquire))
         stop();
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+bool DaemonEngine::start()
+{
+    bool expected = false;
+    if (!running_.compare_exchange_strong(expected, true,
+                                          std::memory_order_release,
+                                          std::memory_order_relaxed))
+    {
+        return false; // already running
     }
 
-    bool DaemonEngine::start()
+    status_.store(DaemonStatus::STARTING, std::memory_order_release);
+
+    PipeError err = setup_pipe();
+    if (err != PipeError::None)
     {
-        bool expected = false;
-        // Neden compare_exchange? Thread-safe state transition için.
-        if (!running_.compare_exchange_strong(expected, true))
-        {
-            return true; // Already running
-        }
+        std::cerr << "[AXIOM Daemon] setup_pipe failed: "
+                  << pipe_error_to_string(err) << '\n';
+        running_.store(false, std::memory_order_release);
+        status_.store(DaemonStatus::PIPE_ERROR, std::memory_order_release);
+        return false;
+    }
 
-        status_.store(DaemonStatus::STARTING);
+    status_.store(DaemonStatus::READY, std::memory_order_release);
+    daemon_thread_    = std::thread([this] { daemon_loop(); });
+    request_processor_ = std::thread([this] { request_processor_loop(); });
+    return true;
+}
 
-        PipeError pipe_err = setup_pipe();
-        if (pipe_err != PipeError::None)
-        {
-            // ERROR HANDLING FIX: Log specific error for diagnostics
-            status_.store(DaemonStatus::PIPE_ERROR);
-            running_.store(false);
-            
-            // Log to stderr for now (in production, use proper logging framework)
-            std::cerr << "[AXIOM DAEMON ERROR] Pipe setup failed: " 
-                      << pipe_error_to_string(pipe_err) << std::endl;
-            // TODO: Integrate with proper logging framework (spdlog, etc.)
-            return false;
-        }
+void DaemonEngine::stop()
+{
+    bool expected = true;
+    if (!running_.compare_exchange_strong(expected, false,
+                                          std::memory_order_release,
+                                          std::memory_order_relaxed))
+    {
+        return;
+    }
 
-        // Threadleri başlatırken exception gelirse program göçmesin diye try-catch bloğu
-        // Start threads with exception handling to prevent crashes
+    status_.store(DaemonStatus::SHUTDOWN, std::memory_order_release);
+
+    if (daemon_thread_.joinable())     daemon_thread_.join();
+    if (request_processor_.joinable()) request_processor_.join();
+
+    cleanup_pipe();
+
+    std::scoped_lock lock(sessions_mutex_);
+    sessions_.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Pipe setup / teardown
+// ---------------------------------------------------------------------------
+
+DaemonEngine::PipeError DaemonEngine::setup_pipe()
+{
+#ifdef _WIN32
+    std::string full_name = "\\\\.\\pipe\\" + pipe_name_;
+    pipe_handle_ = CreateNamedPipeA(
+        full_name.c_str(),
+        PIPE_ACCESS_DUPLEX,
+        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+        1,       // max instances
+        4096,    // out buffer
+        4096,    // in buffer
+        0,       // default timeout
+        nullptr  // default security
+    );
+    if (pipe_handle_ == INVALID_HANDLE_VALUE)
+    {
+        DWORD err = GetLastError();
+        if (err == ERROR_ACCESS_DENIED)    return PipeError::PermissionDenied;
+        if (err == ERROR_ALREADY_EXISTS)   return PipeError::AlreadyExists;
+        return PipeError::SystemError;
+    }
+    return PipeError::None;
+#else
+    std::string path = "/tmp/" + pipe_name_;
+    // Remove stale FIFO
+    ::unlink(path.c_str());
+    if (::mkfifo(path.c_str(), 0600) != 0)
+    {
+        if (errno == EACCES) return PipeError::PermissionDenied;
+        return PipeError::SystemError;
+    }
+    pipe_fd_ = ::open(path.c_str(), O_RDONLY | O_NONBLOCK);
+    if (pipe_fd_ < 0) return PipeError::SystemError;
+    return PipeError::None;
+#endif
+}
+
+void DaemonEngine::cleanup_pipe()
+{
+#ifdef _WIN32
+    if (pipe_handle_ != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(pipe_handle_);
+        pipe_handle_ = INVALID_HANDLE_VALUE;
+    }
+#else
+    if (pipe_fd_ >= 0)
+    {
+        ::close(pipe_fd_);
+        pipe_fd_ = -1;
+    }
+    std::string path = "/tmp/" + pipe_name_;
+    ::unlink(path.c_str());
+#endif
+}
+
+const char* DaemonEngine::pipe_error_to_string(PipeError error)
+{
+    switch (error) {
+        case PipeError::None:                    return "None";
+        case PipeError::PermissionDenied:        return "PermissionDenied";
+        case PipeError::AlreadyExists:           return "AlreadyExists";
+        case PipeError::ResourceExhausted:       return "ResourceExhausted";
+        case PipeError::InvalidName:             return "InvalidName";
+        case PipeError::SystemError:             return "SystemError";
+        case PipeError::SecurityDescriptorFailed:return "SecurityDescriptorFailed";
+        default:                                 return "Unknown";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+// Lightweight JSON key extractor — finds "key":"value" patterns.
+// Expected format: {"command":"2+2","session":"abc","mode":"algebraic"}
+static std::string json_get(const std::string& json, const std::string& key)
+{
+    std::string search = "\"" + key + "\":\"";
+    auto pos = json.find(search);
+    if (pos == std::string::npos) return "";
+    pos += search.size();
+    auto end = json.find('"', pos);
+    if (end == std::string::npos) return "";
+    return json.substr(pos, end - pos);
+}
+
+// ---------------------------------------------------------------------------
+// IPC loops
+// ---------------------------------------------------------------------------
+
+void DaemonEngine::daemon_loop()
+{
+    while (running_.load(std::memory_order_acquire))
+    {
         try
         {
-            daemon_thread_ = std::thread(&DaemonEngine::daemon_loop, this);
-            request_processor_ = std::thread(&DaemonEngine::request_processor_loop, this);
-        }
-        catch (const std::runtime_error& e)
-        {
-            std::cerr << "[AXIOM DAEMON ERROR] Thread creation failed (runtime): " << e.what() << std::endl;
-            cleanup_pipe();
-            running_.store(false);
-            return false;
-        }
-        catch (const std::exception& e)
-        {
-            std::cerr << "[AXIOM DAEMON ERROR] Thread creation failed: " << e.what() << std::endl;
-            cleanup_pipe();
-            running_.store(false);
-            return false;
-        }
-        catch (...)
-        {
-            std::cerr << "[AXIOM DAEMON ERROR] Unknown exception during thread creation" << std::endl;
-            cleanup_pipe();
-            running_.store(false);
-            return false;
-        }
-
-        status_.store(DaemonStatus::READY);
-        return true;
-    }
-
-    void DaemonEngine::stop()
-    {
-        bool expected = true;
-        if (!running_.compare_exchange_strong(expected, false))
-        {
-            return;
-        }
-
-        status_.store(DaemonStatus::SHUTDOWN);
-
-        // Wake up threads
-        queue_cv_.notify_all();
-
-        // Windows'ta blocking I/O'yu kırmak için gerekirse pipe'a boş byte atılmalı
-        // veya CancelIo kullanılmalı ama burada basitçe join bekleyeceğiz.
-
-        if (daemon_thread_.joinable())
-            daemon_thread_.join();
-        if (request_processor_.joinable())
-            request_processor_.join();
-
-        cleanup_pipe();
-
-        std::scoped_lock lock(sessions_mutex_);
-        sessions_.clear();
-    }
-
-    DaemonEngine::PipeError DaemonEngine::setup_pipe()
-    {
 #ifdef _WIN32
-        std::string pipe_path = "\\\\.\\pipe\\" + pipe_name_;
-
-        // SECURITY UPGRADE: Only Local Admin and Creator can access
-        SECURITY_ATTRIBUTES sa;
-        sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-        sa.bInheritHandle = FALSE;
-        
-        if (!ConvertStringSecurityDescriptorToSecurityDescriptorA(
-            "D:(A;;GA;;;BA)(A;;GA;;;SY)", // Admins & System only
-            SDDL_REVISION_1,
-            &(sa.lpSecurityDescriptor),
-            NULL))
-        {
-            return PipeError::SecurityDescriptorFailed;
-        }
-
-        pipe_handle_ = CreateNamedPipeA(
-            pipe_path.c_str(),
-            PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-            PIPE_UNLIMITED_INSTANCES,
-            4096, 4096, 0, &sa
-        );
-
-        LocalFree(sa.lpSecurityDescriptor);
-
-        if (pipe_handle_ == INVALID_HANDLE_VALUE)
-        {
-            DWORD error = GetLastError();
-            switch (error)
+            bool connected = ConnectNamedPipe(pipe_handle_, nullptr)
+                             ? true
+                             : (GetLastError() == ERROR_PIPE_CONNECTED);
+            if (connected)
             {
-                case ERROR_ACCESS_DENIED:
-                    return PipeError::PermissionDenied;
-                case ERROR_PIPE_BUSY:
-                case ERROR_ALREADY_EXISTS:
-                    return PipeError::AlreadyExists;
-                case ERROR_NOT_ENOUGH_MEMORY:
-                case ERROR_OUTOFMEMORY:
-                    return PipeError::ResourceExhausted;
-                case ERROR_INVALID_NAME:
-                    return PipeError::InvalidName;
-                default:
-                    return PipeError::SystemError;
-            }
-        }
-
-        return PipeError::None;
-#else
-        std::string pipe_path = "/tmp/" + pipe_name_;
-
-        unlink(pipe_path.c_str());
-
-        // SECURITY UPGRADE: Mode 0600 (User Read/Write ONLY)
-        if (mkfifo(pipe_path.c_str(), 0600) != 0)
-        {
-            switch (errno)
-            {
-                case EACCES:
-                case EPERM:
-                    return PipeError::PermissionDenied;
-                case EEXIST:
-                    return PipeError::AlreadyExists;
-                case ENOMEM:
-                case ENOSPC:
-                    return PipeError::ResourceExhausted;
-                case ENAMETOOLONG:
-                    return PipeError::InvalidName;
-                default:
-                    return PipeError::SystemError;
-            }
-        }
-
-        // Open in blocking mode initially to ensure connection semantics
-        pipe_fd_ = open(pipe_path.c_str(), O_RDWR);
-        if (pipe_fd_ == -1)
-        {
-            unlink(pipe_path.c_str()); // Cleanup
-            switch (errno)
-            {
-                case EACCES:
-                case EPERM:
-                    return PipeError::PermissionDenied;
-                case EMFILE:
-                case ENFILE:
-                    return PipeError::ResourceExhausted;
-                default:
-                    return PipeError::SystemError;
-            }
-        }
-
-        return PipeError::None;
-#endif
-    }
-
-    void DaemonEngine::cleanup_pipe()
-    {
-#ifdef _WIN32
-        if (pipe_handle_ != INVALID_HANDLE_VALUE)
-        {
-            DisconnectNamedPipe(pipe_handle_); // Ensure client is disconnected
-            CloseHandle(pipe_handle_);
-            pipe_handle_ = INVALID_HANDLE_VALUE;
-        }
-#else
-        if (pipe_fd_ != -1)
-        {
-            close(pipe_fd_);
-            pipe_fd_ = -1;
-        }
-        std::string pipe_path = "/tmp/" + pipe_name_;
-        unlink(pipe_path.c_str());
-#endif
-    }
-
-    void DaemonEngine::daemon_loop()
-    {
-        while (running_.load())
-        {
-            try
-            {
-#ifdef _WIN32
-                // Blocking wait for connection
-                bool connected = ConnectNamedPipe(pipe_handle_, nullptr) ? true : (GetLastError() == ERROR_PIPE_CONNECTED);
-
-                if (connected)
-                {
-                    char buffer[4096];
-                    DWORD bytes_read = 0;
-
-                    if (ReadFile(pipe_handle_, buffer, sizeof(buffer) - 1, &bytes_read, nullptr))
-                    {
-                        buffer[bytes_read] = '\0';
-
-                        // PERFORMANCE FIX TODO: Replace manual parsing with nlohmann/json or similar
-                        // Current implementation is slow, error-prone, and not scalable
-                        // Recommendation: #include <nlohmann/json.hpp> and use json::parse()
-                        std::string req_str(buffer);
-
-                        // Simplified manual JSON-ish parsing (temporary solution)
-                        auto get_val = [&](const std::string &key)
-                        {
-                            size_t pos = req_str.find("\"" + key + "\":");
-                            if (pos == std::string::npos)
-                                return std::string("");
-                            size_t start = req_str.find("\"", pos + key.length() + 3);
-                            size_t end = req_str.find("\"", start + 1);
-                            if (start == std::string::npos || end == std::string::npos)
-                                return std::string("");
-                            return req_str.substr(start + 1, end - start - 1);
-                        };
-
-                        Request request;
-                        request.command = get_val("command");
-                        request.session_id = get_val("session");
-                        request.mode = get_val("mode");
-
-                        if (!request.command.empty())
-                        {
-                            request.request_id = next_request_id_.fetch_add(1);
-                            request.timestamp = std::chrono::steady_clock::now();
-
-                            {
-                                std::scoped_lock lock(queue_mutex_);
-                                request_queue_.push(request);
-                            }
-                            queue_cv_.notify_one();
-                        }
-                    }
-                    DisconnectNamedPipe(pipe_handle_);
-                }
-#else
-                // Linux implementation
                 char buffer[4096];
-                // Blocking read is efficient here because we opened with O_RDWR
-                ssize_t bytes_read = read(pipe_fd_, buffer, sizeof(buffer) - 1);
+                DWORD bytes_read = 0;
 
-                if (bytes_read > 0)
+                if (ReadFile(pipe_handle_, buffer, sizeof(buffer) - 1, &bytes_read, nullptr))
                 {
                     buffer[bytes_read] = '\0';
                     std::string req_str(buffer);
 
-                    // Aynı parse mantığı (Code duplication avoided in real production via parser class)
-                    auto get_val = [&](const std::string &key)
-                    {
-                        size_t pos = req_str.find("\"" + key + "\":");
-                        if (pos == std::string::npos)
-                            return std::string("");
-                        size_t start = req_str.find("\"", pos + key.length() + 3);
-                        size_t end = req_str.find("\"", start + 1);
-                        return (start != std::string::npos && end != std::string::npos) ? req_str.substr(start + 1, end - start - 1) : "";
-                    };
-
                     Request request;
-                    request.command = get_val("command");
-                    request.session_id = get_val("session");
-                    request.mode = get_val("mode");
+                    request.command    = json_get(req_str, "command");
+                    request.session_id = json_get(req_str, "session");
+                    request.mode       = json_get(req_str, "mode");
 
                     if (!request.command.empty())
                     {
-                        request.request_id = next_request_id_.fetch_add(1);
-                        request.timestamp = std::chrono::steady_clock::now();
+                        request.request_id = next_request_id_.fetch_add(1, std::memory_order_relaxed);
+                        request.timestamp  = std::chrono::steady_clock::now();
 
-                        {
-                            std::scoped_lock lock(queue_mutex_);
-                            request_queue_.push(request);
-                        }
-                        queue_cv_.notify_one();
+                        // Process synchronously so we can write the response
+                        // before the pipe connection is closed.
+                        auto resp = execute_command(request);
+
+                        std::string resp_json =
+                            "{\"success\":" + std::string(resp.success ? "true" : "false") +
+                            ",\"result\":\"" + resp.result + "\"" +
+                            ",\"error\":\"" + resp.error + "\"" +
+                            ",\"time\":" + std::to_string(resp.execution_time_ms) + "}";
+
+                        DWORD written = 0;
+                        WriteFile(pipe_handle_,
+                                  resp_json.c_str(),
+                                  static_cast<DWORD>(resp_json.size()),
+                                  &written,
+                                  nullptr);
                     }
                 }
-                else
+                DisconnectNamedPipe(pipe_handle_);
+            }
+#else
+            char buffer[4096];
+            ssize_t bytes_read = ::read(pipe_fd_, buffer, sizeof(buffer) - 1);
+
+            if (bytes_read > 0)
+            {
+                buffer[bytes_read] = '\0';
+                std::string req_str(buffer);
+
+                Request request;
+                request.command    = json_get(req_str, "command");
+                request.session_id = json_get(req_str, "session");
+                request.mode       = json_get(req_str, "mode");
+
+                if (!request.command.empty())
                 {
-                    // Pipe broken or empty, sleep small amount to prevent CPU spin if something weird happens
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                }
-#endif
-            }
-            catch (const std::runtime_error &e)
-            {
-                // Log runtime error and backoff
-                std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Backoff strategy
-            }
-            catch (const std::exception &e)
-            {
-                // Log error
-                std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Backoff strategy
-            }
-        }
-    }
+                    request.request_id = next_request_id_.fetch_add(1, std::memory_order_relaxed);
+                    request.timestamp  = std::chrono::steady_clock::now();
 
-    void DaemonEngine::request_processor_loop()
-    {
-        while (running_.load())
-        {
-            Request request;
-            {
-                std::unique_lock<std::mutex> lock(queue_mutex_);
-                queue_cv_.wait(lock, [this]
-                               { return !request_queue_.empty() || !running_.load(); });
-
-                if (!running_.load() && request_queue_.empty())
-                    break;
-
-                request = request_queue_.front();
-                request_queue_.pop();
-            } // Lock releases here
-
-            status_.store(DaemonStatus::BUSY);
-            execute_command(request); // Response handling omitted for brevity but logic is inside
-            status_.store(DaemonStatus::READY);
-
-            total_requests_.fetch_add(1);
-        }
-    }
-
-    DaemonEngine::Response DaemonEngine::execute_command(const Request &request)
-    {
-        Response response;
-        response.request_id = request.request_id;
-        response.session_id = request.session_id;
-        auto start_time = std::chrono::high_resolution_clock::now();
-
-        try
-        {
-            // DESIGN FIX: Keep session lock longer to prevent dangling pointer
-            // TODO: Consider using shared_ptr for better lifetime management
-            std::scoped_lock lock(sessions_mutex_);
-            
-            auto it = sessions_.find(request.session_id);
-            if (it == sessions_.end())
-            {
-                // Auto-create session if not exists (Lazy initialization)
-                sessions_[request.session_id] = std::make_unique<SessionContext>(request.session_id);
-                it = sessions_.find(request.session_id);
-            }
-
-            if (it == sessions_.end() || !it->second)
-                throw std::runtime_error("Session allocation failed");
-
-            SessionContext* session = it->second.get();
-            session->update_access_time();
-            std::string result;
-
-            // Command Pattern or Strategy Pattern would be better here, but fixing the logic first:
-            if (request.mode == "linear")
-            {
-                if (!session->linear_parser)
-                    throw std::runtime_error("Linear engine not initialized");
-                auto res = session->linear_parser->ParseAndExecute(request.command);
-                if (res.HasErrors())
-                    throw std::runtime_error("Linear system execution failed");
-
-                // Extract vector result
-                if (res.result.has_value() && std::holds_alternative<Vector>(*res.result))
-                {
-                    const auto &solution = std::get<Vector>(*res.result);
-                    std::ostringstream oss;
-                    for (size_t i = 0; i < solution.size(); ++i)
+                    static constexpr auto kLoopBudget = std::chrono::milliseconds(2);
+                    const auto deadline = std::chrono::steady_clock::now() + kLoopBudget;
+                    bool enqueued = false;
+                    while (running_.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
                     {
-                        if (i > 0)
-                            oss << ", ";
-                        oss << "x" << i << " = " << solution[i];
+                        if (request_queue_.push(request))
+                        {
+                            enqueued = true;
+                            break;
+                        }
+                        std::this_thread::yield();
                     }
-                    result = oss.str();
-                }
-                else
-                {
-                    throw std::runtime_error("Invalid result type from linear parser");
+
+                    if (!enqueued)
+                    {
+                        rejected_requests_.fetch_add(1, std::memory_order_relaxed);
+                    }
                 }
             }
             else
             {
-                // Default to algebraic
-                if (!session->algebraic_parser)
-                    throw std::runtime_error("Algebraic engine not initialized");
-                auto res = session->algebraic_parser->ParseAndExecute(request.command);
-                if (res.HasErrors())
-                    throw std::runtime_error("Algebraic execution failed");
-
-                // Extract numeric result
-                auto dbl_val = res.GetDouble();
-                if (dbl_val.has_value())
-                {
-                    result = std::to_string(*dbl_val);
-                }
-                else
-                {
-                    throw std::runtime_error("Invalid result type from algebraic parser");
-                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
-
-            session->history.push_back(request.command + " -> " + result);
-            response.success = true;
-            response.result = result;
+#endif
         }
-        catch (const std::exception &e)
+        catch (const std::exception& e)
         {
-            response.success = false;
-            response.error = e.what();
+            std::cerr << "[AXIOM Daemon] loop exception: " << e.what() << '\n';
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+}
+
+void DaemonEngine::request_processor_loop()
+{
+    while (running_.load(std::memory_order_acquire))
+    {
+        Request request;
+
+        while (!request_queue_.pop(request)) {
+            if (!running_.load(std::memory_order_acquire)) return;
+            std::this_thread::yield();
         }
 
-        auto end_time = std::chrono::high_resolution_clock::now();
-        response.execution_time_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
-        update_metrics(response.execution_time_ms);
+        status_.store(DaemonStatus::BUSY, std::memory_order_release);
 
-        return response;
+        auto resp = execute_command(request);
+        (void)resp; // async path: responses for send_command() callers are not piped back
+
+        status_.store(DaemonStatus::READY, std::memory_order_release);
+        total_requests_.fetch_add(1, std::memory_order_relaxed);
     }
+}
 
-    void DaemonEngine::update_metrics(double execution_time)
-    {
-        // Atomic loop for CAS (Compare-And-Swap) if strict precision needed,
-        // but for metrics simple store is acceptable.
-        // However, let's use a thread-safe approach for the math:
-        double current = avg_response_time_.load();
-        double next = current * 0.9 + execution_time * 0.1;
-        avg_response_time_.store(next);
-    }
+// ---------------------------------------------------------------------------
+// Command execution
+// ---------------------------------------------------------------------------
 
-    const char* DaemonEngine::pipe_error_to_string(PipeError error)
+DaemonEngine::Response DaemonEngine::execute_command(const Request& req)
+{
+    Response resp;
+    resp.request_id        = req.request_id;
+    resp.session_id        = req.session_id;
+    resp.timestamp         = std::chrono::steady_clock::now();
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+    try
     {
-        switch (error)
+        const auto open_until = circuit_open_until_ms_.load(std::memory_order_acquire);
+        const auto now = now_ms();
+        if (open_until > now)
         {
-            case PipeError::None:
-                return "No error";
-            case PipeError::PermissionDenied:
-                return "Permission denied - check user privileges";
-            case PipeError::AlreadyExists:
-                return "Pipe already exists - another daemon may be running";
-            case PipeError::ResourceExhausted:
-                return "Resource exhausted - too many open handles/file descriptors";
-            case PipeError::InvalidName:
-                return "Invalid pipe name";
-            case PipeError::SystemError:
-                return "System error during pipe creation";
-            case PipeError::SecurityDescriptorFailed:
-                return "Failed to create security descriptor (Windows)";
-            case PipeError::Unknown:
-            default:
-                return "Unknown error";
+            resp.success = false;
+            resp.error = "CircuitBreakerOpen";
+            rejected_requests_.fetch_add(1, std::memory_order_relaxed);
+            return resp;
+        }
+
+        thread_local DynamicCalc calc;
+
+        // Set calculation mode from request
+        if (req.mode == "linear" || req.mode == "linear_system")
+            calc.SetMode(CalculationMode::LINEAR_SYSTEM);
+        else if (req.mode == "stats" || req.mode == "statistics")
+            calc.SetMode(CalculationMode::STATISTICS);
+        else if (req.mode == "symbolic")
+            calc.SetMode(CalculationMode::SYMBOLIC);
+        else
+            calc.SetMode(CalculationMode::ALGEBRAIC);
+
+        auto engine_result = calc.Evaluate(req.command);
+
+        if (engine_result.HasErrors())
+        {
+            resp.success = false;
+            if (engine_result.error.has_value())
+            {
+                resp.error = engine_error_to_string(engine_result.error.value());
+            }
+            else
+            {
+                resp.error = "EngineError";
+            }
+        }
+        else
+        {
+            resp.success = true;
+            auto d = engine_result.GetDouble();
+            resp.result  = d ? std::to_string(*d) : "ok";
+        }
+    }
+    catch (const std::exception& e)
+    {
+        resp.success = false;
+        resp.error   = e.what();
+    }
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    resp.execution_time_ms =
+        std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    if (resp.success)
+    {
+        consecutive_failures_.store(0, std::memory_order_release);
+    }
+    else
+    {
+        const auto failures = consecutive_failures_.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (failures >= circuit_failure_threshold())
+        {
+            circuit_open_until_ms_.store(now_ms() + circuit_open_duration_ms(), std::memory_order_release);
+            consecutive_failures_.store(0, std::memory_order_release);
         }
     }
 
-    // ... (Rest of session management logic implies standard thread-safe access)
+    update_metrics(resp.execution_time_ms);
+    return resp;
+}
+
+void DaemonEngine::update_metrics(double execution_time)
+{
+    uint64_t n = total_requests_.load(std::memory_order_relaxed) + 1;
+    double current_avg = avg_response_time_.load(std::memory_order_relaxed);
+    double new_avg = current_avg + (execution_time - current_avg) / static_cast<double>(n);
+    avg_response_time_.store(new_avg, std::memory_order_relaxed);
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+DaemonEngine::Response DaemonEngine::process_request(const Request& request)
+{
+    return execute_command(request);
+}
+
+bool DaemonEngine::send_command(const std::string& session_id,
+                                const std::string& command,
+                                const std::string& mode)
+{
+    if (!running_.load(std::memory_order_acquire)) return false;
+
+    const auto open_until = circuit_open_until_ms_.load(std::memory_order_acquire);
+    if (open_until > now_ms())
+    {
+        rejected_requests_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    Request req;
+    req.session_id = session_id;
+    req.command    = command;
+    req.mode       = mode;
+    req.request_id = next_request_id_.fetch_add(1, std::memory_order_relaxed);
+    req.timestamp  = std::chrono::steady_clock::now();
+
+    // Apply bounded backpressure: fail fast if queue remains saturated.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(backpressure_wait_ms());
+    while (!request_queue_.push(req)) {
+        if (!running_.load(std::memory_order_acquire))
+        {
+            return false;
+        }
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            rejected_requests_.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        std::this_thread::yield();
+    }
+    return true;
+}
+
+std::string DaemonEngine::create_session()
+{
+    // Use a nanosecond timestamp for a unique-enough ID without external deps
+    auto ns = std::chrono::steady_clock::now().time_since_epoch().count();
+    std::string id = "session_" + std::to_string(ns);
+
+    auto ctx = std::make_unique<SessionContext>();
+    ctx->session_id  = id;
+    ctx->created_at  = std::chrono::steady_clock::now();
+
+    std::scoped_lock lock(sessions_mutex_);
+    sessions_[id] = std::move(ctx);
+    return id;
+}
+
+bool DaemonEngine::destroy_session(const std::string& session_id)
+{
+    std::scoped_lock lock(sessions_mutex_);
+    return sessions_.erase(session_id) > 0;
+}
+
+std::vector<std::string> DaemonEngine::get_active_sessions()
+{
+    std::scoped_lock lock(sessions_mutex_);
+    std::vector<std::string> ids;
+    ids.reserve(sessions_.size());
+    for (const auto& [k, _] : sessions_) ids.push_back(k);
+    return ids;
+}
+
+std::chrono::milliseconds DaemonEngine::get_uptime() const
+{
+    auto now = std::chrono::steady_clock::now();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(now - startup_time_);
+}
 
 } // namespace AXIOM

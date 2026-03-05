@@ -1,0 +1,162 @@
+QWidget {
+    background: #1A1C1E;
+    color: #E1E1E1;
+    font-family: "JetBrains Mono", "Cascadia Mono", "Consolas", monospace;
+    font-size: 10pt;
+}
+
+QMainWindow {
+    background: #1A1C1E;
+}
+
+QFrame#HeaderBar {
+    background: #222428;
+    border: 1px solid #2C2F34;
+    border-radius: 8px;
+}
+
+QFrame#Sidebar {
+    background: #222428;
+    border: 1px solid #2C2F34;
+    border-radius: 8px;
+}
+
+QFrame#Card {
+    background: #222428;
+    border: 1px solid #2C2F34;
+    border-radius: 8px;
+}
+
+QPushButton {
+    background: #222428;
+    border: 1px solid #2C2F34;
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: #E1E1E1;
+    font-weight: 600;
+}
+
+QPushButton:hover {
+    background: #2A2D32;
+    border-color: #00E5FF;
+}
+
+QPushButton:pressed {
+    background: #193940;
+}
+
+QPushButton[nav="true"] {
+    text-align: center;
+    padding: 4px;
+    color: #B9C1C9;
+}
+
+QPushButton[nav="true"]:hover {
+    color: #E1E1E1;
+}
+
+QPushButton[nav="true"]:checked {
+    border-color: #00E5FF;
+    color: #00E5FF;
+}
+
+QLabel#Title {
+    color: #00E5FF;
+    font-size: 14pt;
+    font-weight: 700;
+}
+
+QLabel#SubTitle {
+    color: #96A0AA;
+    font-size: 9pt;
+}
+
+QLabel#BrandMark {
+    min-width: 24px;
+    min-height: 24px;
+    max-width: 24px;
+    max-height: 24px;
+}
+
+QLabel#NavHint {
+    background: #202328;
+    color: #00E5FF;
+    border: 1px solid #2C2F34;
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-size: 9pt;
+}
+
+QLabel#Hint {
+    color: #96A0AA;
+}
+
+QLabel#TelemetryGood {
+    color: #00E5FF;
+    font-weight: 600;
+}
+
+QLabel#TelemetryWarn {
+    color: #FFB300;
+    font-weight: 600;
+}
+
+QLabel#TelemetryHot {
+    color: #FFB300;
+    font-weight: 600;
+}
+
+QTableWidget {
+    background: #1F2125;
+    alternate-background-color: #222428;
+    border: 1px solid #2C2F34;
+    gridline-color: #2C2F34;
+}
+
+QHeaderView::section {
+    background: #222428;
+    color: #B9C1C9;
+    border: none;
+    border-right: 1px solid #2C2F34;
+    padding: 6px;
+    font-weight: 600;
+}
+
+QTabWidget::pane {
+    border: 1px solid #2C2F34;
+    background: #1F2125;
+}
+
+QTabBar::tab {
+    background: #222428;
+    color: #B9C1C9;
+    padding: 6px 10px;
+    margin-right: 2px;
+}
+
+QTabBar::tab:selected {
+    background: #2A2D32;
+    color: #00E5FF;
+}
+
+QPlainTextEdit {
+    background: #1F2125;
+    border: 1px solid #2C2F34;
+    color: #E1E1E1;
+}
+
+QLineEdit {
+    background: #1F2125;
+    border: 1px solid #2C2F34;
+    border-radius: 6px;
+    color: #E1E1E1;
+    padding: 7px 10px;
+}
+
+QLineEdit#CommandPalette {
+    min-height: 32px;
+    border: 1px solid #00E5FF;
+    background: #202328;
+    color: #E1E1E1;
+    font-weight: 600;
+}

@@ -2,6 +2,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Optional
 
 
 class CppEngineInterface:
@@ -91,9 +92,33 @@ class CppEngineInterface:
 
     def _check_result_errors(self, result_text: str) -> dict:
         """Check if result contains error messages."""
-        if any(msg in result_text.lower() for msg in ["error:", "failed", "invalid"]):
+        lowered = result_text.lower().strip()
+        if lowered.startswith("error:") or lowered.startswith("runtime error:"):
             return {"success": False, "error": result_text, "fallback_needed": True}
         return {}
+
+    def _read_until_end(self, timeout_s: float) -> Optional[str]:
+        """Read engine stdout until __END__ marker within timeout."""
+        result_lines = []
+        timeout_time = time.time() + timeout_s
+
+        while time.time() < timeout_time:
+            if not self.process or self.process.poll() is not None:
+                raise Exception("Engine process terminated unexpectedly")
+
+            line = self.process.stdout.readline()
+            if not line:
+                time.sleep(0.005)
+                continue
+
+            line = line.rstrip("\r\n")
+            if line == "__END__":
+                return "\n".join(result_lines).strip()
+
+            if line:
+                result_lines.append(line)
+
+        return None
 
     def _mode_flag(self) -> str | None:
         """Return CLI mode flag for the configured engine mode."""
@@ -143,36 +168,23 @@ class CppEngineInterface:
                 if mode and mode != "algebraic":
                     self.process.stdin.write(f":mode {mode}\n")
                     self.process.stdin.flush()
+                    mode_ack = self._read_until_end(1.0)
+                    if mode_ack is None:
+                        return {"success": False, "error": "Mode change timeout", "fallback_needed": True}
+                    mode_err = self._check_result_errors(mode_ack)
+                    if mode_err:
+                        return mode_err
                 
                 # Send command
                 self.process.stdin.write(command + "\n")
                 self.process.stdin.flush()
                 
-                # Read result lines until __END__ marker or timeout
-                result_lines = []
-                timeout_time = time.time() + 3.0
-                
-                while time.time() < timeout_time:
-                    # Check if process died
-                    if self.process.poll() is not None:
-                        raise Exception("Engine process terminated unexpectedly")
-                    
-                    # Read with short timeout (Windows compatible)
-                    line = self.process.stdout.readline()
-                    if not line:
-                        time.sleep(0.01)  # Brief wait before retry
-                        continue
-                    
-                    line = line.rstrip()
-                    if line == "__END__":
-                        break
-                    
-                    if line:  # Skip empty lines
-                        result_lines.append(line)
-                
+                result_text = self._read_until_end(3.0)
                 execution_time = (time.time() - start_time) * 1000
-                result_text = "\n".join(result_lines).strip()
-                
+
+                if result_text is None:
+                    return {"success": False, "error": "C++ engine timeout (3s)", "fallback_needed": True}
+
                 if result_text:
                     error_response = self._check_result_errors(result_text)
                     if error_response:

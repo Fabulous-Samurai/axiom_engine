@@ -106,6 +106,14 @@ venv.bak/
 docs/_build/
 docs/.doctrees/
 
+# Doxygen generated output
+html/
+latex/
+xml/
+rtf/
+man/
+doxygen_sqlite3.db
+
 # Type checking
 .mypy_cache/
 .dmypy.json
@@ -156,3 +164,15 @@ scripts/*/logs/
 
 # Archive directories (legacy files)
 archive/
+
+# Local analysis/tooling artifacts (do not commit)
+codeql/
+codeql-db-*/
+codeql-*.zip
+
+# Local session/temp workspace folders
+tmpclaude-*/
+
+# Generated benchmark output files
+benchmark_results.csv
+benchmark_results.json

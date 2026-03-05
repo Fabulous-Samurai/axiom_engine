@@ -1,450 +1,270 @@
-# AXIOM Engine v3.1 - Enterprise Mathematical Computing Platform
+# AXIOM Engine v3.1.1
 
-[![Version](https://img.shields.io/badge/version-3.1.0-blue.svg)](https://github.com/Fabulous-Samurai/axiom_engine/releases)
+[![Version](https://img.shields.io/badge/version-3.1.1-blue.svg)](https://github.com/Fabulous-Samurai/axiom_engine/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-51%2F51%20passing-success.svg)](tests/giga_test_suite.cpp)
-[![Build Status](https://github.com/Fabulous-Samurai/axiom_engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Fabulous-Samurai/axiom_engine/actions)
-[![Performance](https://img.shields.io/badge/performance-Optimized-red.svg)](docs/user/performance.md)
 [![C++](https://img.shields.io/badge/C++-20-blue.svg)](https://isocpp.org/)
-[![Code Quality](https://img.shields.io/badge/quality-production%20ready-brightgreen.svg)](docs/FIX_REPORT_100_PERCENT.md)
 
-Enterprise-grade mathematical computing platform with daemon architecture, Python integration, linear algebra acceleration, and production-ready error handling.
+AXIOM is a C++20-first mathematical engine with a hybrid FFI model.
 
----
+- Core computation is in C++.
+- Python is positioned mainly for GUI and visualization.
+- `nanobind` is used as the C++/Python bridge.
 
-## 🎯 Key Features
+## What This Project Provides
 
-### 🧮 **Multi-Mode Computation Engine**
+- Multi-mode computation engine (`algebraic`, `linear`, `statistics`, `symbolic`, `units`, `plot`).
+- CLI execution for single-expression and interactive workflows.
+- Python GUI frontend (`gui/python/axiom_gui.py`) with C++ engine integration.
+- Dedicated benchmark binary with CSV and JSON report export.
+- Large C++ test targets for integration and stress validation.
 
-- **Algebraic Mode:** Advanced expression parsing with AST-based evaluation
-- **Complex Number Mode:** Revolutionary sqrt(-1) = i support with fast-path optimization
-- **Advanced Mathematics:** FFT, eigenvalues, polynomial roots, signal processing
-- **Linear System Mode:** Matrix operations and equation solving
-- **Statistics Mode:** Comprehensive statistical analysis and hypothesis testing
-- **Unit Conversion Mode:** Dimensional analysis with 20+ unit types
-- **Plotting Mode:** ASCII-based function visualization
-- **Symbolic Mode:** Computer algebra foundations (expandable)
+## Architecture Summary
 
-### ⚡ **Performance & Architecture**
+### Core Runtime
 
-- **High-Performance Computing:** Optimized C++20 engine with minimal overhead
-- **Enterprise Daemon Mode:** IPC via Named Pipes (Windows) / FIFO (Linux) with concurrent request processing
-- **Python Integration:** nanobind-powered Python interop with native performance
-- **Linear Algebra Acceleration:** Eigen3-powered matrix operations with SIMD optimization
-- **Arena Memory Management:** Custom 64KB block allocator for AST nodes with free-list optimization
-- **Expression Memoization:** Intelligent caching with context-aware invalidation
-- **SafeMath Operations:** Overflow-protected arithmetic with bounds checking
-- **Exception-Free Design:** `EvalResult<T>` pattern with `std::optional` and error enums
-- **Thread-Safe Evaluation:** Concurrent expression processing with proper session management
-- **Security-Hardened:** SDDL descriptors on Windows, 0600 permissions on Linux, buffer overflow protection
+- `DynamicCalc` routes requests by `CalculationMode` to parser implementations.
+- Parser-backed path supports algebraic, linear system, statistics, and symbolic modes.
+- Typed arithmetic fast-path (`EvaluateFast`) bypasses parser overhead for hot arithmetic operations.
 
----
+### Dispatch and Performance Routing
 
-## 🏗️ AXIOM v3.1 Architecture
+- `SelectiveDispatcher` can route to native compute and optional backends.
+- Native dispatch path reuses `thread_local DynamicCalc` to reduce per-request construction cost.
+- Optional integration points exist for Eigen and nanobind backends when enabled.
 
-### Enterprise Features
+### Daemon and IPC
 
-#### 🔧 **Daemon Mode**
-- Background service architecture with IPC communication
-- Named Pipes on Windows (PIPE_ACCESS_DUPLEX with SDDL security)
-- FIFO files on Linux (mode 0600 for security)
-- Concurrent request processing with thread-safe session management
-- Platform-specific error handling with detailed PipeError enum
+- Daemon implementation exists in source with lock-free SPSC request queue and platform pipe handling.
+- Current default build profile does not explicitly define `ENABLE_DAEMON_MODE` for `axiom` CLI.
+- Treat daemon CLI commands as build-configuration-dependent features.
 
-#### 🐍 **Python Integration**
-- nanobind-powered Python interop for seamless integration
-- Native C++ performance with Python convenience
-- Bidirectional data exchange without overhead
-- Optional compilation flag for flexible deployment
+### Python Integration Model
 
-#### 📊 **Linear Algebra Engine**
-- Eigen3 library for high-performance matrix operations
-- SIMD-accelerated computations (SSE/AVX when available)
-- Matrix multiplication, decompositions, and eigenvalue computation
-- Performance metrics tracking and reporting
+- Hybrid FFI is the intended primary integration strategy.
+- Embedded Python engine sources are optional (`AXIOM_ENABLE_EMBEDDED_PYTHON_ENGINE=OFF` by default).
+- Optional GUI dependencies are intentionally minimal:
+  - `numpy`
+  - `matplotlib`
+  - `PySide6` (Qt GUI runtime, when using CPython wheels)
 
-#### 🛡️ **Security & Safety**
-- Buffer overflow protection (snprintf instead of sprintf)
-- Thread-safe operations with std::scoped_lock
-- Mutable member pattern for const-method safety
-- Platform-specific security descriptors
-- Comprehensive error logging to stderr
+## Build System and Presets
 
-### Technical Foundation
+### Requirements
 
-- **Language:** C++17/20 with modern features (std::optional, std::variant, string_view)
-- **Build System:** CMake 3.12+ with Ninja generator
-- **Threading:** std::thread, std::mutex, std::atomic, std::condition_variable
-- **Memory:** Custom arena allocators, mmap/VirtualAlloc
-- **Dependencies:** Eigen3 (optional), nanobind (optional), Python 3.x (optional)
+- C++20 compiler
+- CMake 3.12+
+- Ninja
 
----
+### Presets
 
-## 🔧 Computation Capabilities
+`CMakePresets.json` includes:
 
-### 🧮 **Algebraic Engine**
+- `default-ninja`: release-oriented standard profile (`AXIOM_ENABLE_CXX20_MODULES=OFF`)
+- `modules-ninja`: experimental profile with modules flag enabled
+- `build-release`: build preset for default profile
+- `build-modules`: builds `axiom_modules_pilot`
 
-```cpp
-// Basic Arithmetic
-// Basic Operations
-3 + 5 * 2^3 - sqrt(16)
+### Default Build
 
-// Advanced Functions
-sin(45) + cos(30) + tan(60)
-log(100) + ln(e) + exp(2)
-abs(-5) + max(3,7) + min(2,9)
-
-// With Variables (Ans)
-5 * 3          // → 15
-Ans + 10       // → 25 (uses previous result)
-```
-
-### 🧮 **Advanced Calculus Engine**
-```cpp
-// Numerical Limits (Epsilon-Delta Convergence) - 100% SUCCESS RATE
-limit(x^2, x, 2)              // → 4.0 (polynomial limit)
-limit(sin(x), x, 0)           // → 0.0 (trigonometric limit)
-limit(x*x + 2*x, x, 3)        // → 15.0 (complex expressions)
-limit(abs(x), x, 0)           // → 0.0 (absolute value limit)
-
-// Numerical Integration (Adaptive Simpson's Rule) - PERFECT ACCURACY
-integrate(x, x, 0, 2)         // → 2.0 (linear function)
-integrate(x^2, x, 0, 3)       // → 9.0 (quadratic function)
-integrate(2*x + 1, x, 0, 2)   // → 6.0 (polynomial integral)
-integrate(x^3, x, -1, 1)      // → 0.0 (symmetric odd function)
-
-// Production-Grade Error Handling
-limit(x^2, invalid, 2)        // → ArgumentMismatch error
-integrate(x)                  // → ArgumentMismatch error (need 4 args)
-limit(x)                      // → ArgumentMismatch error (need 3 args)
-
-// Performance: <1ms execution, 10^-12 precision, 100% test success
-```
-
-### 📊 **Statistics Engine**
-```cpp
-// Descriptive Statistics
-data = [1,2,3,4,5,6,7,8,9,10]
-mean(data)     // → 5.5
-median(data)   // → 5.5
-std_dev(data)  // → 3.03
-
-// Hypothesis Testing
-t_test(sample1, sample2)      // Two-sample t-test
-chi_squared_test(obs, exp)    // Chi-squared test
-correlation(x_data, y_data)   // Pearson correlation
-```
-
-### 🔄 **Unit Conversion Engine**
-```cpp
-// Length Conversions
-convert(100, "cm", "m")     // → 1.0
-convert(5, "ft", "in")      // → 60.0
-
-// Temperature Conversions
-convert(100, "C", "F")      // → 212.0
-convert(273.15, "K", "C")   // → 0.0
-
-// Complex Units
-convert(60, "mph", "m/s")    // → 26.82
-```
-
-### 📐 **Linear System Solver**
-```cpp
-// Matrix Notation (NEW in v3.1!)
-solve [[2,1],[1,3]] [8,13]
-// → Solution: x = 2.2, y = 3.6
-
-// Natural Language Input
-"2x + 3y = 10; x - y = 1"
-// → Solution: x = 2.6, y = 1.6
-
-// 3x3 System
-solve [[2,1,1],[1,3,2],[1,0,0]] [4,5,6]
-// → Solution: x = 29, y = -16, z = 3
-
-// Matrix Operations
-"x + 2y + z = 6; 2x - y + 3z = 14; 3x + y - z = -2"
-// → Solution: x = 1, y = 2, z = 1
-```
-
-### 📈 **Plotting Engine**
-```cpp
-// Function Plotting
-plot("sin(x)", -10, 10)     // ASCII sine wave
-plot("x^2", -5, 5)          // Parabola visualization
-plot("log(x)", 0.1, 10)     // Logarithmic curve
-```
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-- **C++20** compatible compiler (GCC 10+, Clang 12+, MSVC 2019+)
-- **CMake 3.11+**
-- **Ninja** (recommended) or Make
-- **Git** for submodule management
-
-### Build Instructions
-
-#### Windows (MSYS2/MinGW)
 ```bash
-# Clone with submodules
-git clone --recursive https://github.com/yourusername/cpp_dynamic_calc.git
-cd cpp_dynamic_calc
-
-# Configure and build
-cmake -S . -B build -G "Ninja"
-cmake --build build --parallel
-
-# Run
-.\build\cpp_dynamic_calc.exe
+cmake --preset default-ninja
+cmake --build build --config Release
 ```
 
-#### Linux/macOS
+### Optional Modules Pilot
+
 ```bash
-# Clone with submodules
-git clone --recursive https://github.com/yourusername/cpp_dynamic_calc.git
-cd cpp_dynamic_calc
-
-# Configure and build
-cmake -S . -B build
-cmake --build build -j$(nproc)
-
-# Run
-./build/cpp_dynamic_calc
+cmake --preset modules-ninja
+cmake --build --preset build-modules
 ```
 
-### Development Build
+Notes:
+
+- C++20 modules are incremental/experimental in this repository.
+- GNU/MinGW profiles intentionally skip module compilation and emit a configure-time warning.
+
+## Main CMake Targets
+
+- `axiom`: main CLI engine executable
+- `run_tests`: baseline test executable
+- `axiom_benchmark`: benchmark executable (`tests/benchmark_suite.cpp`)
+- `giga_test_suite`: comprehensive monolithic C++ test executable
+- `ast_drills`: AST-focused test executable
+- `axiom_modules_pilot`: experimental modules target (or skip-stub depending on compiler)
+
+## CLI Usage
+
+### Interactive Mode
+
 ```bash
-# Debug build with testing
-cmake -S . -B cmake-build-debug -DCMAKE_BUILD_TYPE=Debug
-cmake --build cmake-build-debug
-
-# Run tests
-./cmake-build-debug/run_tests
+./build/axiom
 ```
 
----
+### Single Expression
 
-## 🎮 Usage Guide
-
-### Interactive Commands
 ```bash
-# Mode Switching
-mode algebraic    # Switch to algebraic calculator
-mode linear      # Switch to linear system solver
-mode stats       # Switch to statistics mode
-mode units       # Switch to unit conversion
-mode plot        # Switch to plotting mode
-
-# Utility Commands
-help            # Show command reference
-clear           # Clear screen
-exit            # Close application
-history         # Show calculation history
+./build/axiom "2 + 3 * 4"
 ```
 
-### Example Session
-```
-Ogulator v2.5.0 - Multi-Modal Calculation Engine
-> mode algebraic
-Switched to Algebraic mode
+### Mode Selection
 
-> 3 + 5 * 2^3
-Result: 43
-
-> sin(90) + cos(0)
-Result: 2
-
-> mode stats
-Switched to Statistics mode
-
-> mean([1,2,3,4,5])
-Result: 3
-
-> mode units
-Switched to Units mode
-
-> convert(100, "cm", "m")
-Result: 1 m
-```
-
----
-
-## 🧪 Testing
-
-### Unit Tests
 ```bash
-# Run all tests
+./build/axiom --mode=linear "solve [[2,1],[1,3]] [8,13]"
+./build/axiom --mode=statistics "mean([1,2,3,4,5])"
+./build/axiom --symbolic "x^2 + 2*x + 1"
+```
+
+### GUI Hint Mode
+
+```bash
+./build/axiom --gui
+```
+
+### Python GUI Launcher
+
+```bash
+python gui/python/axiom_gui.py
+```
+
+### Interactive Subprocess Mode (for GUI integrations)
+
+```bash
+./build/axiom --interactive
+```
+
+The interactive subprocess protocol supports mode switching via `:mode <name>` and delimits responses with `__END__`.
+
+## Benchmarking
+
+### Build and Run
+
+```bash
+cmake --build build --config Release --target axiom_benchmark
+./build/axiom_benchmark
+```
+
+### What Is Measured
+
+- Scalar parser throughput (`Evaluate("2+2")` loop)
+- Typed fast-path throughput (`EvaluateFast`)
+- Zero-copy style vector transfer behavior
+- Lock-free queue IPC cycle behavior
+
+### Generated Benchmark Artifacts
+
+- `benchmark_results.csv`
+- `benchmark_results.json`
+
+## Formal Verification (TLA+)
+
+AXIOM now includes an initial TLA+ model for IPC protocol checks.
+
+- Spec location: `formal/tla/AxiomIpcProtocol.tla`
+- TLC config: `formal/tla/AxiomIpcProtocol.cfg`
+- Spec location: `formal/tla/AxiomDaemonQueueFairness.tla`
+- TLC config: `formal/tla/AxiomDaemonQueueFairness.cfg`
+- Guide: `docs/formal/TLA_PLUS_VERIFICATION.md`
+
+Current model scope:
+
+- Interactive protocol framing (`__END__`)
+- Mode switch sequencing before command execution
+- Request/response progression safety
+- Daemon queue fairness (enqueued requests eventually processed and completed)
+
+## Testing
+
+Detailed test playbook is available at [tests/README.md](tests/README.md).
+
+### C++ Test Binaries
+
+```bash
+cmake --build build --config Release --target run_tests giga_test_suite ast_drills
 ./build/run_tests
-
-# AST-specific tests
+./build/giga_test_suite
 ./build/ast_drills
 ```
 
-### Manual Testing
-```bash
-# Performance benchmarking
-time echo "sin(45) * cos(30) + tan(60)" | ./build/cpp_dynamic_calc
+### Python/Integration Test Assets
 
-# Memory usage analysis
-valgrind --tool=memcheck ./build/cpp_dynamic_calc
+Repository also includes Python-side tests and examples under `tests/` (unit/integration/example oriented files).
+
+If you use `pytest`, run from repository root:
+
+```bash
+pytest
 ```
 
----
+## Configuration Flags
 
-## 🔬 Technical Deep Dive
+Important CMake options:
 
-### Memory Management
-- **Arena Allocator:** 64KB block-based allocation for AST nodes
-- **RAII Patterns:** Automatic cleanup with smart pointers
-- **Cache-Friendly:** Contiguous memory layout for better performance
+- `AXIOM_AUTO_INSTALL_PYTHON_DEPS` (default `ON`)
+- `AXIOM_ENABLE_EMBEDDED_PYTHON_ENGINE` (default `OFF`)
+- `AXIOM_ENABLE_CXX20_MODULES` (default `OFF`)
+- `BUILD_GIGA_TESTS` (default `ON`)
 
-### Error Handling
-- **Type-Safe Errors:** `CalcErr` enum instead of exceptions
-- **Monadic Composition:** `EvalResult<T>` supports chaining operations
-- **Context Preservation:** Error messages include expression context
+Behavior notes:
 
-### Parser Architecture
-- **Shunting-Yard Algorithm:** Proper operator precedence handling
-- **Recursive Descent:** Support for nested function calls
-- **Token Streaming:** Efficient string-to-AST conversion
+- Python dependency auto-install runs only when a virtual environment is detected.
+- Embedded Python engine sources are excluded unless explicitly enabled.
 
----
+## Runtime Guardrail Configuration
 
-## ✅ Testing & Quality Assurance
+AXIOM now supports runtime tuning for expression policy and daemon resilience without recompilation.
 
-### Test Coverage
-- **51/51 tests passing** (100% success rate)
-- **8 computation engines** fully validated
-- **Comprehensive edge case coverage**
-- **Production-ready quality**
+### Expression Policy Environment Variables
 
-### Test Suites
+- `AXIOM_POLICY_MAX_CHARS_DEFAULT` (default `8192`)
+- `AXIOM_POLICY_MAX_CHARS_SYMBOLIC` (default `16384`)
+- `AXIOM_POLICY_MAX_TOKENS` (default `2048`)
+- `AXIOM_POLICY_MAX_DEPTH_DEFAULT` (default `128`)
+- `AXIOM_POLICY_MAX_DEPTH_SYMBOLIC` (default `256`)
+- `AXIOM_POLICY_MAX_CARET_OPS` (default `64`)
+- `AXIOM_POLICY_MAX_MATRIX_ELEMENTS` (default `40000`)
 
-#### Giga Test Suite
-Production-grade validation across all engines:
-```bash
-cd build
-./giga_test_suite
-```
+### Daemon Resilience Environment Variables
 
-**Coverage:**
-- ✅ Algebraic Parser (10/10 tests)
-- ✅ Linear System Parser (5/5 tests)  
-- ✅ Statistics Engine (8/8 tests)
-- ✅ Symbolic Engine (6/6 tests)
-- ✅ Unit Manager (7/7 tests)
-- ✅ Plot Engine (5/5 tests)
-- ✅ Eigen Engine (7/7 tests)
-- ✅ Dynamic Calc Integration (3/3 tests)
+- `AXIOM_DAEMON_CIRCUIT_FAILURE_THRESHOLD` (default `5`)
+- `AXIOM_DAEMON_CIRCUIT_OPEN_MS` (default `2000`)
+- `AXIOM_DAEMON_BACKPRESSURE_WAIT_MS` (default `5`)
 
-#### Benchmark Suite
-Performance profiling for critical operations:
-```bash
-./benchmark_suite
-```
+### Suggested Presets
 
-**Metrics measured:**
-- Execution time (min/avg/max)
-- Throughput (operations/second)
-- Scalability testing (n=10 to n=10,000)
+- `balanced`:
+  - Keep defaults for most workloads.
+- `strict`:
+  - Reduce `AXIOM_POLICY_MAX_TOKENS` and `AXIOM_POLICY_MAX_DEPTH_DEFAULT` by 30-50%.
+  - Reduce `AXIOM_DAEMON_CIRCUIT_FAILURE_THRESHOLD` (for example to `3`).
+- `throughput`:
+  - Increase `AXIOM_DAEMON_BACKPRESSURE_WAIT_MS` moderately (for example to `8-12`).
+  - Keep circuit-open window conservative to avoid prolonged refusal windows.
 
-#### Edge Case Suite
-Boundary condition and error handling validation:
-```bash
-./edge_case_suite
-```
+## Repository Orientation
 
-**Scenarios:**
-- Empty inputs
-- Division by zero
-- Singular matrices
-- Very large/small numbers
-- Malformed expressions
+- `src/`: core engine and runtime implementation
+- `include/`: public/core headers
+- `core/dispatch/`: selective dispatcher and C API adapter
+- `tests/`: C++ and Python test assets
+- `gui/python/`: Python GUI frontend and helpers
+- `modules/`: incremental C++20 modules pilot units
 
-### Quality Reports
-- 📊 [100% Test Pass Report](docs/FIX_REPORT_100_PERCENT.md)
-- 📈 [QA Test Results](docs/qa/AXIOM_QA_FINAL_REPORT.md)
-- 🎯 [Architecture Documentation](docs/api/architecture.md)
+## Known Constraints
 
----
+- Some CLI help output still references enterprise flags that depend on compile-time macros.
+- Daemon runtime paths are platform-conditional and build-definition-dependent.
+- Modules support is intentionally conservative per compiler profile.
 
-## 🔄 Version History
+## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
+See [CHANGELOG.md](CHANGELOG.md) for release history and migration notes.
 
-**Current Version: 3.1.0**
-- ✅ **100% test pass rate** - All 51 tests passing
-- ✅ **Matrix notation solver** - Direct `solve [[A]] [b]` syntax
-- ✅ **Fixed variant access bugs** - AXIOM::Number unwrapping
-- ✅ **Enhanced test suite** - Benchmarks and edge cases
-- ✅ Enterprise daemon mode with IPC (Named Pipes/FIFO)
-- ✅ Python integration via nanobind for seamless interop
-- ✅ Eigen3 linear algebra acceleration with SIMD
-- ✅ Security hardening (buffer overflow protection, thread-safety)
-- ✅ Platform-specific error handling (PipeError enum)
-- ✅ Professional codebase (removed emojis, uncommented production code)
-- ✅ Clean dependencies (removed FTXUI)
+## Related Guides
 
----
+- Test guide: [tests/README.md](tests/README.md)
+- Optional Python dependencies: [requirements-optional.txt](requirements-optional.txt)
+- TLA+ verification guide: [docs/formal/TLA_PLUS_VERIFICATION.md](docs/formal/TLA_PLUS_VERIFICATION.md)
 
-## 📚 Documentation
+## License
 
-### API Documentation
-- [Linear System Parser API](docs/api/linear_system_parser_api.md) - Matrix notation solver
-- [AXIOM::Number Variant Pattern](docs/api/variant_pattern_guide.md) - Type system guide
-- [Architecture Overview](docs/api/architecture.md) - System design
-- [Performance Guide](docs/user/performance.md) - Optimization tips
-
-### Reports
-- [Fix Report](docs/FIX_REPORT_100_PERCENT.md) - Detailed changes for 100% tests
-- [QA Report](docs/qa/AXIOM_QA_FINAL_REPORT.md) - Quality assurance results
-- [Project Structure](docs/PROJECT_STRUCTURE.md) - Codebase organization
-
----
-
-## 🤝 Contributing
-
-1. **Fork** the repository
-2. **Create** a feature branch: `git checkout -b feature/amazing-feature`
-3. **Commit** changes: `git commit -m 'Add amazing feature'`
-4. **Push** to branch: `git push origin feature/amazing-feature`
-5. **Open** a Pull Request
-
-### Development Guidelines
-- Follow **C++20** best practices
-- Maintain **exception-free** design patterns
-- Add **unit tests** for new features (target: 100% pass rate)
-- Update **documentation** for API changes
-- Run full test suite before submitting PR
-
-### Running Tests Locally
-```bash
-# Build all test suites
-cmake --build build --target giga_test_suite benchmark_suite edge_case_suite
-
-# Run all tests
-cd build
-./giga_test_suite && ./edge_case_suite && ./benchmark_suite
-```
-
----
-
-## 📄 License
-
-This project is licensed under the **MIT License** - see [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 Acknowledgments
-
-- **C++20 Standards:** Concepts, ranges, and improved constexpr support
-- **Mathematical Algorithms:** Numerical Recipes and NIST Statistical Handbook
-- **Community:** C++ Core Guidelines and Modern C++ practices
-
----
-
-*Built with precision, designed for extensibility, optimized for performance.*
+MIT. See [LICENSE](LICENSE).
