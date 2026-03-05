@@ -1,4 +1,4 @@
-# AXIOM Agent Process
+﻿# AXIOM Agent Process
 
 This file defines a practical workflow to manage iterative work with coding agents.
 
@@ -167,11 +167,18 @@ Use this template when assigning work to an agent.
 
 | Item | Focus | Status | Evidence | Impact |
 | --- | --- | --- | --- | --- |
-| P0 | Fast-path API design | DONE | `DynamicCalc::EvaluateFast` + `TryEvaluateFast` integrated | Parser bypass path available for hot arithmetic |
-| P1 | DynamicCalc fast-path implementation | DONE | Release build green | Lower arithmetic dispatch overhead |
-| P2 | Benchmark fast-path coverage | DONE | `axiom_benchmark` includes fast-path metrics export | Comparable parser vs fast-path measurements |
-| P3 | Build validation | DONE | `cmake --build build --config Release` success | End-to-end compile confidence |
-| P4 | Runtime safety table/report | DONE | This table + `README.md` runtime guardrail section | Operational tuning clarity for Tier-2/Tier-3 rollout |
+| P0 | Fast-path API design | DONE | `DynamicCalc::EvaluateFast` + `TryEvaluateFast` API active in core | Typed arithmetic path avoids parser/vtable overhead |
+| P1 | DynamicCalc fast-path implementation | DONE | `src/dynamic_calc.cpp` fast operation switch path in release build | Deterministic O(1) arithmetic dispatch |
+| P2 | Benchmark fast-path coverage | DONE | `tests/benchmark_suite.cpp` includes `typed_fast_path` scenario + CSV/JSON export | Parser path vs typed path now measured in same harness |
+| P3 | Build validation | DONE | `axiom`, `run_tests`, `axiom_benchmark` build targets passed | End-to-end compile confidence |
+| P4 | Aşama kazanım tablosu | DONE | Benchmark snapshot below | Quantified speedup for rollout planning |
+
+Fast-path gain snapshot (`build/axiom_benchmark.exe`, 2026-03-05):
+
+| Metric | Scalar Parser Path | Typed Fast-Path | Gain |
+| --- | --- | --- | --- |
+| Throughput (ops/sec) | `100074` | `4.16632e+08` | `~4163x` |
+| Latency (us/op) | `9.99264` | `0.0024002` | `~4163x lower` |
 
 Validation snapshot for P4:
 
@@ -234,7 +241,7 @@ This test is the required compatibility gate before starting optimization phases
 Status: PASS
 
 - Diagnostics (`src` + `include`): no errors.
-- Mismatch scan (`EvaluateWithContext`): no matches in `include/`, fixed in `src/selective_dispatcher.cpp`.
+- Mismatch scan (`EvaluateWithContext`): no matches in `include/`, fixed in `core/dispatch/selective_dispatcher.cpp`.
 - Build state: release build green.
 
 Files covered in run order:
@@ -247,7 +254,7 @@ Files covered in run order:
 - `src/statistics_engine.cpp`
 - `src/unit_manager.cpp`
 - `src/unit_parser.cpp`
-- `src/selective_dispatcher.cpp`
+- `core/dispatch/selective_dispatcher.cpp`
 - `src/python_repl.cpp`
 - `src/python_parser.cpp`
 - `src/python_engine.cpp`
@@ -263,7 +270,7 @@ Files covered in run order:
 - `include/algebraic_parser.h`
 - `include/dynamic_calc_types.h`
 - `include/statistics_engine.h`
-- `include/selective_dispatcher.h`
+- `core/dispatch/selective_dispatcher.h`
 - `include/statistics_parser.h`
 - `include/python_repl.h`
 - `include/symbolic_parser.h`
@@ -389,10 +396,11 @@ Lock performance baselines and operational gates for revenue-facing wrapper rele
 
 ## Execution Rhythm
 
-- Work strictly phase-by-phase (A → B → C).
+- Work strictly phase-by-phase (A -> B -> C).
 - Do not open a new phase before previous phase exit criteria are satisfied.
 - After each phase, record:
   - changed files,
   - validation evidence,
   - accepted risks,
   - deferred items.
+
