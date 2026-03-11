@@ -57,7 +57,7 @@ public:
                                  ComputeEngine preferred_engine = ComputeEngine::Auto);
     
     EngineResult DispatchMatrixOperation(const std::string& operation, 
-                                         Eigen::Ref<const Eigen::MatrixXd> matrix_data);
+                                         const Eigen::Ref<const Eigen::MatrixXd>& matrix_data);
     
     void SetPreferredEngine(ComputeEngine engine);
     void EnableFallback(bool enable = true);

@@ -38,6 +38,7 @@ namespace AXIOM
         {
         public:
             explicit MatrixLexer(const std::string &input) : input_(input), pos_(0) {}
+            explicit MatrixLexer(std::string_view input) : input_(input), pos_(0) {}
 
             Token NextToken()
             {
@@ -130,15 +131,15 @@ namespace AXIOM
 
     void LinearSystemParser::RegisterCommands()
     {
-        command_registry_.push_back({"qr", [this](const std::string &s)
+        command_registry_.emplace_back(CommandEntry{"qr", [this](const std::string &s)
                                      { return HandleQR(s); }, "Performs QR Decomposition"});
-        command_registry_.push_back({"ortho", [this](const std::string &s)
+        command_registry_.emplace_back(CommandEntry{"ortho", [this](const std::string &s)
                                      { return HandleQR(s); }, "Performs QR Decomposition"});
-        command_registry_.push_back({"eigen", [this](const std::string &s)
+        command_registry_.emplace_back(CommandEntry{"eigen", [this](const std::string &s)
                                      { return HandleEigen(s); }, "Computes Eigenvalues and Eigenvectors"});
-        command_registry_.push_back({"cramer", [this](const std::string &s)
+        command_registry_.emplace_back(CommandEntry{"cramer", [this](const std::string &s)
                                      { return HandleCramer(s); }, "Solves system using Cramer's Rule"});
-        command_registry_.push_back({"solve", [this](const std::string &s)
+        command_registry_.emplace_back(CommandEntry{"solve", [this](const std::string &s)
                                      { return HandleSolve(s); }, "Solves linear system Ax=b"});
     }
 
@@ -156,19 +157,19 @@ namespace AXIOM
 
     EngineResult LinearSystemParser::HandleQR(const std::string &input) const
     {
-        auto extract_matrix_string = [&input]() -> std::string
+        auto extract_matrix_string = [&input]() -> std::string_view
         {
             size_t matrix_start = input.find_first_of("0123456789-[");
             if (matrix_start == std::string::npos)
-                return "";
-            return input.substr(matrix_start);
+                return std::string_view();
+            return std::string_view(input).substr(matrix_start);
         };
 
-        std::string matrix_str = extract_matrix_string();
+        std::string_view matrix_str = extract_matrix_string();
         if (matrix_str.empty())
             return CreateErrorResult(LinAlgErr::ParseError);
 
-        Matrix A = ParseMatrixString(matrix_str);
+        Matrix A = ParseMatrixString(std::string(matrix_str));
         if (A.empty())
             return CreateErrorResult(LinAlgErr::ParseError);
         if (A.size() < A[0].size())
@@ -181,21 +182,22 @@ namespace AXIOM
         return CreateSuccessResult(std::move(Q)); // Zero-copy taşıma!
     }
 
+
     EngineResult LinearSystemParser::HandleEigen(const std::string &input) const
     {
-        auto extract_matrix_string = [&input]() -> std::string
+        auto extract_matrix_string = [&input]() -> std::string_view
         {
             size_t matrix_start = input.find_first_of("0123456789-[");
             if (matrix_start == std::string::npos)
-                return "";
-            return input.substr(matrix_start);
+                return std::string_view();
+            return std::string_view(input).substr(matrix_start);
         };
 
-        std::string matrix_str = extract_matrix_string();
+        std::string_view matrix_str = extract_matrix_string();
         if (matrix_str.empty())
             return CreateErrorResult(LinAlgErr::ParseError);
 
-        Matrix A = ParseMatrixString(matrix_str);
+        Matrix A = ParseMatrixString(std::string(matrix_str));
         if (A.empty() || A.size() != A[0].size())
             return CreateErrorResult(LinAlgErr::MatrixMismatch);
 
@@ -206,7 +208,7 @@ namespace AXIOM
 
     EngineResult LinearSystemParser::HandleCramer(const std::string &input) const
     {
-        std::string equation = input.substr(6);
+        std::string equation{std::string(input).substr(6)};
         std::vector<std::vector<double>> A;
         std::vector<double> b;
 
@@ -224,9 +226,10 @@ namespace AXIOM
 
     EngineResult LinearSystemParser::HandleSolve(const std::string &input) const
     {
-        std::string content = input.substr(5);
+        std::string_view content = std::string_view(input).substr(5);
 
         std::string processed;
+        processed.reserve(content.size());
         for (char c : content)
         {
             if (c != ' ')
@@ -303,7 +306,7 @@ namespace AXIOM
         std::vector<std::vector<double>> A;
         std::vector<double> b;
 
-        if (!ParseLinearSystem(input, A, b))
+        if (!ParseLinearSystem(std::string(input), A, b))
             return CreateErrorResult(LinAlgErr::ParseError);
         if (A.size() == 0 || A.size() != b.size())
             return CreateErrorResult(LinAlgErr::MatrixMismatch);

@@ -77,7 +77,10 @@ Available flags:
 
 ## Running Benchmarks
 ```bash
-.\build\axiom_benchmark.exe
+# Cross-platform: locally
+# ./build/axiom_benchmark.exe --benchmark_out=output/benchmarks/run.json
+
+# In CI: run benchmarks only on scheduled or manual workflows to avoid long jobs.
 ```
 
 ## Protocol conformance

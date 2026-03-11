@@ -28,6 +28,26 @@ option(AXIOM_AUTO_SIGN_WINDOWS "Automatically Authenticode-sign Windows binaries
 set(AXIOM_WINDOWS_SIGNING_SUBJECT "CN=AXIOM Local Dev Code Signing" CACHE STRING "Subject for local Windows code-signing certificate")
 set(AXIOM_PY_REQUIREMENTS "${CMAKE_SOURCE_DIR}/requirements-optional.txt")
 
+# Detect common CI environments and adjust unsafe, machine-specific defaults.
+set(AXIOM_RUNNING_IN_CI OFF)
+if(DEFINED ENV{GITHUB_ACTIONS})
+    if($ENV{GITHUB_ACTIONS})
+        set(AXIOM_RUNNING_IN_CI ON)
+    endif()
+elseif(DEFINED ENV{CI})
+    if($ENV{CI})
+        set(AXIOM_RUNNING_IN_CI ON)
+    endif()
+endif()
+
+if(AXIOM_RUNNING_IN_CI)
+    message(STATUS "CI detected: Adjusting build defaults for reproducibility and portability")
+    # Avoid auto-installing Python deps inside CI runners
+    set(AXIOM_AUTO_INSTALL_PYTHON_DEPS OFF CACHE BOOL "Install optional Python GUI dependencies via pip" FORCE)
+    # Disable automatic Windows signing in CI (requires secrets / certificates)
+    set(AXIOM_AUTO_SIGN_WINDOWS OFF CACHE BOOL "Automatically Authenticode-sign Windows binaries after build" FORCE)
+endif()
+
 set(AXIOM_CXX20_MODULES_ACTIVE OFF)
 if(AXIOM_ENABLE_CXX20_MODULES)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -57,7 +77,12 @@ endif()
 
 # NINJA-ONLY OPTIMIZATION FLAGS - SENNA SPEED
 # GCC/Clang: Maximum optimization + native arch + fast math
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -mtune=native -DNDEBUG -ffast-math -flto" CACHE STRING "Release flags" FORCE)
+# Use conservative, CI-friendly release flags when running inside CI; otherwise keep native optimizations.
+if(AXIOM_RUNNING_IN_CI)
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -ffast-math -flto" CACHE STRING "Release flags" FORCE)
+else()
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -mtune=native -DNDEBUG -ffast-math -flto" CACHE STRING "Release flags" FORCE)
+endif()
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g" CACHE STRING "Debug flags" FORCE)
 # Enable Link Time Optimization  
 set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-flto" CACHE STRING "Release linker flags" FORCE)

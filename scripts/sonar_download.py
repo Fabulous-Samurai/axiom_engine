@@ -28,7 +28,7 @@ def list_components(base_url: str, auth: tuple, project: str, page_size: int = 5
     comps: List[Dict[str, Any]] = []
     page = 1
     while True:
-        url = f"{base_url.rstrip('/')}/api/components/search"
+        url = f"{base_url.rstrip('/')}/api/components/tree"
         params: Dict[str, object] = {"component": project, "qualifiers": "FIL", "ps": page_size, "p": page}
         if org:
             params["organization"] = org

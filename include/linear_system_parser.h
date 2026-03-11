@@ -23,7 +23,7 @@ namespace AXIOM
         struct CommandEntry
         {
             std::string command;
-            std::function<EngineResult(const std::string &)> handler;
+            std::function<EngineResult(const std::string&)> handler;
             std::string description;
         };
         std::vector<CommandEntry> command_registry_;

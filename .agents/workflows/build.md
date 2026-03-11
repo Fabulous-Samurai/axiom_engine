@@ -18,7 +18,8 @@ cmake --preset default-ninja -DAXIOM_ENABLE_SIMD_AVX_VNNI=ON
 
 2. Build all targets:
 ```bash
-cmake --build build
+# Cross-platform: build directory is `build` (use `--config` on multi-config generators)
+cmake --build build --config Release
 ```
 
 3. Verify the build succeeded by checking for zero errors in the output. Expected targets:
@@ -27,15 +28,22 @@ cmake --build build
    - `giga_test_suite.exe` — comprehensive monolithic test suite (56 tests)
    - `axiom_benchmark.exe` — benchmark binary with Mantis BEFORE/AFTER tests
 
-4. Run the test suites:
+4. Run the test suites (cross-platform):
 ```bash
-.\build\run_tests.exe
-.\build\giga_test_suite.exe
+# Prefer CTest in CI for portability if tests are registered via CMake
+ctest --test-dir build --output-on-failure
+
+# Or run specific test binaries (Windows example):
+# ./build/run_tests.exe
+# ./build/giga_test_suite.exe
 ```
 
-5. Run benchmarks:
+5. Run benchmarks (OPTIONAL in CI — benchmarks are heavy):
 ```bash
-.\build\axiom_benchmark.exe
+# Benchmarks are optional in CI. Locally, run:
+# ./build/axiom_benchmark.exe --benchmark_out=output/benchmarks/benchmark_results.json
+
+# In CI, only enable benchmarks on demand or on a scheduled workflow to avoid long runs.
 ```
 
 ## Protocol conformance

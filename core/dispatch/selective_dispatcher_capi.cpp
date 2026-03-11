@@ -13,7 +13,7 @@ using namespace AXIOM;
 AxiomDispatcherHandle Axiom_CreateDispatcher() {
     try {
         // C++ objesini yaratıp void* olarak dış dünyaya fırlatıyoruz
-        return reinterpret_cast<void*>(new SelectiveDispatcher());
+        return static_cast<void*>(new SelectiveDispatcher());
     } catch (...) {
         return nullptr; // Kritik başlatma hatası
     }
@@ -22,7 +22,7 @@ AxiomDispatcherHandle Axiom_CreateDispatcher() {
 void Axiom_DestroyDispatcher(AxiomDispatcherHandle handle) {
     if (handle) {
         // void* olarak gelen gölgeyi tekrar gerçeğe çevirip siliyoruz
-        delete reinterpret_cast<SelectiveDispatcher*>(handle);
+        delete static_cast<SelectiveDispatcher*>(handle);
     }
 }
 
@@ -39,7 +39,7 @@ int Axiom_DispatchMatrix(AxiomDispatcherHandle handle,
 
     // MİMARIN KURALI: C++ Exception'ları (Hataları) C sınırından DIŞARI SIZAMAZ!
     try {
-        auto* dispatcher = reinterpret_cast<SelectiveDispatcher*>(handle);
+        auto* dispatcher = static_cast<SelectiveDispatcher*>(handle);
         std::string op_str(operation_name);
 
         // MİMARIN SİHRİ: EIGEN::MAP (ZERO-COPY)

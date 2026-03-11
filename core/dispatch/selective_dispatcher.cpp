@@ -122,7 +122,9 @@ struct SelectiveDispatcher::Impl {
     bool learning_enabled_{true};
     
     DispatchMetrics last_metrics_{};
-    std::map<ComputeEngine, bool> engine_availability_{};
+    std::map<ComputeEngine, bool> engine_availability_{
+        {ComputeEngine::Native, true}
+    };
     std::map<ComputeEngine, std::map<std::string, EnginePerformance>> engine_performance_{};
     
 #ifdef ENABLE_EIGEN
@@ -134,16 +136,15 @@ struct SelectiveDispatcher::Impl {
 #endif
 };
 
-std::unique_ptr<SelectiveDispatcher> g_dispatcher;
+const std::unique_ptr<SelectiveDispatcher> g_dispatcher = nullptr;
 
 SelectiveDispatcher::SelectiveDispatcher() : pimpl_(std::make_unique<Impl>()) {
-    pimpl_->engine_availability_[ComputeEngine::Native] = true;
 
 #ifdef ENABLE_EIGEN
     try {
         pimpl_->eigen_engine_ = std::make_unique<EigenEngine>();
         pimpl_->engine_availability_[ComputeEngine::Eigen] = true;
-    } catch (const std::exception& e) {
+    } catch (const std::runtime_error& e) {
         pimpl_->engine_availability_[ComputeEngine::Eigen] = false;
         std::cerr << "[AXIOM] EigenEngine initialization failed: " << e.what() << '\n';
     }
@@ -183,7 +184,10 @@ EngineResult SelectiveDispatcher::DispatchOperation(const std::string& operation
         thread_local DynamicCalc native;
         const std::string full_op = BuildOperationInput(operation, args);
         result = native.Evaluate(full_op);
-    } catch (const std::exception& e) {
+    } catch (const std::invalid_argument& e) {
+        std::cerr << "[AXIOM Dispatch] Evaluation exception: " << e.what() << '\n';
+        result = CreateErrorResult(MapDispatchException(e));
+    } catch (const std::domain_error& e) {
         std::cerr << "[AXIOM Dispatch] Evaluation exception: " << e.what() << '\n';
         result = CreateErrorResult(MapDispatchException(e));
     }
@@ -199,7 +203,7 @@ EngineResult SelectiveDispatcher::DispatchOperation(const std::string& operation
 }
 
 EngineResult SelectiveDispatcher::DispatchMatrixOperation(const std::string& operation,
-                                                         Eigen::Ref<const Eigen::MatrixXd> matrix_data) {
+                                                         const Eigen::Ref<const Eigen::MatrixXd>& matrix_data) {
 #ifdef ENABLE_EIGEN
     if (!(pimpl_->engine_availability_[ComputeEngine::Eigen] && pimpl_->eigen_engine_)) [[unlikely]] {
         return CreateErrorResult(CalcErr::OperationNotFound);
@@ -248,8 +252,7 @@ EngineResult SelectiveDispatcher::DispatchMatrixOperation(const std::string& ope
 
     if (MatchesOperation(operation, {"eigenvalues", "eigvals"})) {
         const auto eigen_mat = pimpl_->eigen_engine_->CreateMatrix(mat);
-        const auto decomposition = pimpl_->eigen_engine_->EigenDecomposition(eigen_mat);
-        const auto& eigenvalues = decomposition.first;
+        const auto [eigenvalues, eigenvectors] = pimpl_->eigen_engine_->EigenDecomposition(eigen_mat);
         AXIOM::Vector out;
         out.reserve(static_cast<size_t>(eigenvalues.size()));
         for (int i = 0; i < eigenvalues.size(); ++i) {
@@ -265,8 +268,6 @@ EngineResult SelectiveDispatcher::DispatchMatrixOperation(const std::string& ope
         }
         return CreateSuccessResult(trace);
     }
-
-    return CreateErrorResult(CalcErr::OperationNotFound);
 #endif
     return CreateErrorResult(CalcErr::OperationNotFound);
 }
@@ -275,7 +276,7 @@ std::string SelectiveDispatcher::GetPerformanceReport() const {
     std::ostringstream oss;
     oss << "[AXIOM Dispatch Report]\n";
     oss << "  Last operation : " << pimpl_->last_metrics_.operation_name << '\n';
-    oss << "  Engine used    : " << static_cast<int>(pimpl_->last_metrics_.selected_engine) << '\n';
+    oss << "  Engine used    : " << std::to_underlying(pimpl_->last_metrics_.selected_engine) << '\n';
     oss << "  Exec time (ms) : " << pimpl_->last_metrics_.execution_time_ms << '\n';
     oss << "  Fallback used  : " << (pimpl_->last_metrics_.fallback_used ? "yes" : "no") << '\n';
     return oss.str();

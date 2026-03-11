@@ -52,8 +52,8 @@ The following phases have been completed in a prior session:
 1. Pick the next priority file from `output/parsed_issues.txt`
 2. Read the file and identify the specific Sonar rule violations
 3. Apply fixes in batches (max ~10 edits at a time to avoid regressions)
-4. Build using `/build` workflow
-5. Run tests to verify no regressions
+4. Build using the `build` workflow (cross-platform)
+5. Run tests to verify no regressions (use `ctest` in CI where possible)
 6. Repeat for the next file
 
 ## Protocol conformance
@@ -86,8 +86,8 @@ Systematic remediation of SonarQube issues prioritized by severity and impact.
 
 1. Select top priority file from `output/parsed_issues.txt`
 2. Create a short branch: `fix/sonar/<file>-<shortdesc>`
-3. Make up to 10 focused edits and run `cmake --build build`
-4. Run `build/run_tests.exe` and `ctest` if available
+3. Make up to 10 focused edits and run `cmake --build build --config Release`
+4. Run tests via `ctest --test-dir build --output-on-failure` (or run specific test binaries locally)
 5. Commit and open a PR with `repair_report.json` attached
 
 ## Validation

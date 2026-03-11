@@ -1,3 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build-linux:
+    name: Build & Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config
+
+      - name: Configure CMake
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release -- -j$(nproc)
+
+      - name: Run tests
+        run: |
+          if [ -f build/CTestTestfile.cmake ]; then
+            ctest --test-dir build --output-on-failure
+          else
+            echo "No CTest integration found; skipping ctest"
+          fi
+
+      - name: Upload benchmark artifacts (if present)
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks
+          path: output/benchmarks/**
+
+  build-windows:
+    name: Build & Test (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install choco packages
+        shell: pwsh
+        run: |
+          choco install -y cmake --installargs 'ADD_CMAKE_TO_PATH=System' ninja
+
+      - name: Configure (Ninja)
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build build --config Release
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          if (Test-Path build/CTestTestfile.cmake) {
+            ctest -C Release --test-dir build --output-on-failure
+          } else {
+            Write-Host 'No CTest integration found; skipping ctest'
+          }
+
+      - name: Upload benchmark artifacts (if present)
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks-windows
+          path: output/benchmarks/**
 name: AXIOM Engine CI/CD
 
 on:
