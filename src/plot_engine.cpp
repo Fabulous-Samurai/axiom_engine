@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+using AXIOM::AlgebraicParser;
 
 std::string PlotEngine::PlotFunction(const std::string& expression, const PlotConfig& config) {
     AlgebraicParser parser;
@@ -15,7 +16,7 @@ std::string PlotEngine::PlotFunction(const std::string& expression, const PlotCo
     for (int col = 0; col < config.width; ++col) {
         double x = config.x_min + col * x_step;
         
-        std::map<std::string, double> context;
+        AXIOM::StringMap<double> context;
         context["x"] = x;
         
         auto result = parser.ParseAndExecuteWithContext(expression, context);
@@ -82,7 +83,7 @@ Matrix PlotEngine::ComputeFunctionData(const std::string& expression, const Plot
 
     for (int i = 0; i < n; ++i) {
         const double x = config.x_min + i * x_step;
-        std::map<std::string, double> context;
+        AXIOM::StringMap<double> context;
         context["x"] = x;
 
         auto result = parser.ParseAndExecuteWithContext(expression, context);
@@ -125,7 +126,7 @@ std::string PlotEngine::PlotData(const Vector& x_data, const Vector& y_data, con
     
     std::stringstream result;
     for (const auto& line : lines) {
-        result << line << "\\n";
+        result << line << "\n";
     }
     
     return result.str();

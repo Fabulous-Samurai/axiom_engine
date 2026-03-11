@@ -4,6 +4,7 @@
  */
 
 #include "selective_dispatcher.h"
+#include "signal_exec_traits.h"
 #include "dynamic_calc.h"
 #include <iostream>
 #include <sstream>
@@ -11,6 +12,8 @@
 #include <regex>
 #include <chrono>
 #include <cctype>
+#include <initializer_list>
+#include <string_view>
 
 #ifdef ENABLE_EIGEN
 #include "eigen_engine.h"
@@ -25,51 +28,89 @@ namespace AXIOM {
 namespace {
 
 std::string ToLower(std::string text) {
-    std::transform(text.begin(), text.end(), text.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::ranges::transform(text, text.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return text;
 }
 
-bool RequiresSquareMatrix(const std::string& operation)
+bool MatchesOperation(std::string_view operation,
+                      std::initializer_list<const char*> aliases) {
+    for (const char* alias : aliases) {
+        if (operation == alias) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string BuildOperationInput(std::string_view operation,
+                                const std::vector<std::string>& args) {
+    std::string full_op{operation};
+    size_t capacity = operation.size();
+    for (const auto& arg : args) {
+        capacity += 1 + arg.size();
+    }
+    full_op.reserve(capacity);
+
+    for (const auto& arg : args) {
+        full_op += ' ';
+        full_op += arg;
+    }
+    return full_op;
+}
+
+ComputeEngine ResolveEngine(const ComputeEngine preferred_default,
+                            const std::map<ComputeEngine, bool>& availability,
+                            const ComputeEngine preferred_engine) {
+    ComputeEngine engine = (preferred_engine == ComputeEngine::Auto)
+        ? preferred_default : preferred_engine;
+
+    const bool engine_ok = availability.contains(engine) &&
+                           availability.at(engine);
+    if (!engine_ok || engine == ComputeEngine::Auto) {
+        return ComputeEngine::Native;
+    }
+    return engine;
+}
+
+bool RequiresSquareMatrix(std::string_view operation)
 {
-    return operation == "determinant" || operation == "det" ||
-           operation == "inverse" || operation == "inv" ||
-           operation == "eigenvalues" || operation == "eigvals" ||
-           operation == "trace";
+    return SignalExec::IsSquareOnlyOperation(operation);
 }
 
 CalcErr MapDispatchException(const std::exception& exception) {
+    using enum CalcErr;
     const std::string message = ToLower(exception.what());
 
-    if (message.find("divide") != std::string::npos && message.find("zero") != std::string::npos) {
-        return CalcErr::DivideByZero;
+    if (message.contains("divide") && message.contains("zero")) {
+        return DivideByZero;
     }
-    if (message.find("parse") != std::string::npos ||
-        message.find("syntax") != std::string::npos ||
-        message.find("token") != std::string::npos) {
-        return CalcErr::ParseError;
+    if (message.contains("parse") ||
+        message.contains("syntax") ||
+        message.contains("token")) {
+        return ParseError;
     }
-    if (message.find("negative") != std::string::npos && message.find("root") != std::string::npos) {
-        return CalcErr::NegativeRoot;
+    if (message.contains("negative") && message.contains("root")) {
+        return NegativeRoot;
     }
-    if (message.find("domain") != std::string::npos) {
-        return CalcErr::DomainError;
+    if (message.contains("domain")) {
+        return DomainError;
     }
-    if (message.find("argument") != std::string::npos ||
-        message.find("mismatch") != std::string::npos ||
-        message.find("invalid") != std::string::npos) {
-        return CalcErr::ArgumentMismatch;
+    if (message.contains("argument") ||
+        message.contains("mismatch") ||
+        message.contains("invalid")) {
+        return ArgumentMismatch;
     }
-    if (message.find("overflow") != std::string::npos) {
-        return CalcErr::NumericOverflow;
+    if (message.contains("overflow")) {
+        return NumericOverflow;
     }
-    if (message.find("memory") != std::string::npos ||
-        message.find("alloc") != std::string::npos ||
-        message.find("bad_alloc") != std::string::npos) {
-        return CalcErr::MemoryExhausted;
+    if (message.contains("memory") ||
+        message.contains("alloc") ||
+        message.contains("bad_alloc")) {
+        return MemoryExhausted;
     }
 
-    return CalcErr::OperationNotFound;
+    return OperationNotFound;
 }
 
 } // namespace
@@ -132,26 +173,15 @@ void SelectiveDispatcher::EnableFallback(bool enable) {
 EngineResult SelectiveDispatcher::DispatchOperation(const std::string& operation,
                                                    const std::vector<std::string>& args,
                                                    ComputeEngine preferred_engine) {
-    auto start = std::chrono::high_resolution_clock::now();
-
-    ComputeEngine engine = (preferred_engine == ComputeEngine::Auto)
-        ? pimpl_->preferred_engine_ : preferred_engine;
-
-    // Always ensure we have a working engine — fall back to Native if requested one unavailable
-    bool engine_ok = pimpl_->engine_availability_.count(engine) &&
-                     pimpl_->engine_availability_.at(engine);
-    if (!engine_ok || engine == ComputeEngine::Auto) {
-        engine = ComputeEngine::Native;
-    }
+    const auto start = std::chrono::high_resolution_clock::now();
+    const ComputeEngine engine = ResolveEngine(pimpl_->preferred_engine_,
+                                               pimpl_->engine_availability_,
+                                               preferred_engine);
 
     EngineResult result;
     try {
         thread_local DynamicCalc native;
-        std::string full_op = operation;
-        for (const auto& arg : args) {
-            full_op += ' ';
-            full_op += arg;
-        }
+        const std::string full_op = BuildOperationInput(operation, args);
         result = native.Evaluate(full_op);
     } catch (const std::exception& e) {
         std::cerr << "[AXIOM Dispatch] Evaluation exception: " << e.what() << '\n';
@@ -171,72 +201,72 @@ EngineResult SelectiveDispatcher::DispatchOperation(const std::string& operation
 EngineResult SelectiveDispatcher::DispatchMatrixOperation(const std::string& operation,
                                                          Eigen::Ref<const Eigen::MatrixXd> matrix_data) {
 #ifdef ENABLE_EIGEN
-    if (pimpl_->engine_availability_[ComputeEngine::Eigen] && pimpl_->eigen_engine_) {
-        // Convert Eigen::Ref to AXIOM::Matrix (std::vector<std::vector<double>>)
-        const int rows = static_cast<int>(matrix_data.rows());
-        const int cols = static_cast<int>(matrix_data.cols());
-
-        if (RequiresSquareMatrix(operation) && rows != cols) {
-            return CreateErrorResult(CalcErr::ArgumentMismatch);
-        }
-
-        AXIOM::Matrix mat(rows, std::vector<double>(cols));
-        for (int r = 0; r < rows; ++r)
-            for (int c = 0; c < cols; ++c)
-                mat[r][c] = matrix_data(r, c);
-
-        if (operation == "determinant" || operation == "det") {
-            auto eigen_mat = pimpl_->eigen_engine_->CreateMatrix(mat);
-            double det = pimpl_->eigen_engine_->Determinant(eigen_mat);
-            return CreateSuccessResult(det);
-        }
-
-        if (operation == "transpose" || operation == "trans") {
-            auto eigen_mat = pimpl_->eigen_engine_->CreateMatrix(mat);
-            auto t = pimpl_->eigen_engine_->Transpose(eigen_mat);
-            AXIOM::Matrix out(static_cast<size_t>(t.rows()), std::vector<double>(static_cast<size_t>(t.cols()), 0.0));
-            for (int r = 0; r < t.rows(); ++r) {
-                for (int c = 0; c < t.cols(); ++c) {
-                    out[static_cast<size_t>(r)][static_cast<size_t>(c)] = t(r, c);
-                }
-            }
-            return CreateSuccessResult(std::move(out));
-        }
-
-        if (operation == "inverse" || operation == "inv") {
-            auto eigen_mat = pimpl_->eigen_engine_->CreateMatrix(mat);
-            auto inv = pimpl_->eigen_engine_->Inverse(eigen_mat);
-            AXIOM::Matrix out(static_cast<size_t>(inv.rows()), std::vector<double>(static_cast<size_t>(inv.cols()), 0.0));
-            for (int r = 0; r < inv.rows(); ++r) {
-                for (int c = 0; c < inv.cols(); ++c) {
-                    out[static_cast<size_t>(r)][static_cast<size_t>(c)] = inv(r, c);
-                }
-            }
-            return CreateSuccessResult(std::move(out));
-        }
-
-        if (operation == "eigenvalues" || operation == "eigvals") {
-            auto eigen_mat = pimpl_->eigen_engine_->CreateMatrix(mat);
-            auto decomposition = pimpl_->eigen_engine_->EigenDecomposition(eigen_mat);
-            const auto& eigenvalues = decomposition.first;
-            AXIOM::Vector out;
-            out.reserve(static_cast<size_t>(eigenvalues.size()));
-            for (int i = 0; i < eigenvalues.size(); ++i) {
-                out.push_back(eigenvalues(i));
-            }
-            return CreateSuccessResult(std::move(out));
-        }
-
-        if (operation == "trace") {
-            double trace = 0.0;
-            for (int i = 0; i < rows; ++i) {
-                trace += mat[static_cast<size_t>(i)][static_cast<size_t>(i)];
-            }
-            return CreateSuccessResult(trace);
-        }
-
+    if (!(pimpl_->engine_availability_[ComputeEngine::Eigen] && pimpl_->eigen_engine_)) [[unlikely]] {
         return CreateErrorResult(CalcErr::OperationNotFound);
     }
+
+    const int rows = static_cast<int>(matrix_data.rows());
+    const int cols = static_cast<int>(matrix_data.cols());
+    if (RequiresSquareMatrix(operation) && rows != cols) [[unlikely]] {
+        return CreateErrorResult(CalcErr::ArgumentMismatch);
+    }
+
+    AXIOM::Matrix mat(static_cast<size_t>(rows), std::vector<double>(static_cast<size_t>(cols)));
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            mat[static_cast<size_t>(r)][static_cast<size_t>(c)] = matrix_data(r, c);
+        }
+    }
+
+    const auto to_axiom_matrix = [](const auto& eigen_matrix) {
+        AXIOM::Matrix out(static_cast<size_t>(eigen_matrix.rows()),
+                          std::vector<double>(static_cast<size_t>(eigen_matrix.cols()), 0.0));
+        for (int r = 0; r < eigen_matrix.rows(); ++r) {
+            for (int c = 0; c < eigen_matrix.cols(); ++c) {
+                out[static_cast<size_t>(r)][static_cast<size_t>(c)] = eigen_matrix(r, c);
+            }
+        }
+        return out;
+    };
+
+    if (MatchesOperation(operation, {"determinant", "det"})) {
+        const auto eigen_mat = pimpl_->eigen_engine_->CreateMatrix(mat);
+        return CreateSuccessResult(pimpl_->eigen_engine_->Determinant(eigen_mat));
+    }
+
+    if (MatchesOperation(operation, {"transpose", "trans"})) {
+        const auto eigen_mat = pimpl_->eigen_engine_->CreateMatrix(mat);
+        auto t = pimpl_->eigen_engine_->Transpose(eigen_mat);
+        return CreateSuccessResult(to_axiom_matrix(t));
+    }
+
+    if (MatchesOperation(operation, {"inverse", "inv"})) {
+        const auto eigen_mat = pimpl_->eigen_engine_->CreateMatrix(mat);
+        auto inv = pimpl_->eigen_engine_->Inverse(eigen_mat);
+        return CreateSuccessResult(to_axiom_matrix(inv));
+    }
+
+    if (MatchesOperation(operation, {"eigenvalues", "eigvals"})) {
+        const auto eigen_mat = pimpl_->eigen_engine_->CreateMatrix(mat);
+        const auto decomposition = pimpl_->eigen_engine_->EigenDecomposition(eigen_mat);
+        const auto& eigenvalues = decomposition.first;
+        AXIOM::Vector out;
+        out.reserve(static_cast<size_t>(eigenvalues.size()));
+        for (int i = 0; i < eigenvalues.size(); ++i) {
+            out.push_back(eigenvalues(i));
+        }
+        return CreateSuccessResult(std::move(out));
+    }
+
+    if (operation == "trace") {
+        double trace = 0.0;
+        for (int i = 0; i < rows; ++i) {
+            trace += mat[static_cast<size_t>(i)][static_cast<size_t>(i)];
+        }
+        return CreateSuccessResult(trace);
+    }
+
+    return CreateErrorResult(CalcErr::OperationNotFound);
 #endif
     return CreateErrorResult(CalcErr::OperationNotFound);
 }

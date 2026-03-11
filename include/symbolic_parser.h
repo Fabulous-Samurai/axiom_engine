@@ -1,8 +1,7 @@
 #pragma once
 #include "IParser.h"
-#include "symbolic_engine.h"
-#include "dynamic_calc_types.h"
-#include <string>
+
+class SymbolicEngine;
 
 namespace AXIOM {
 

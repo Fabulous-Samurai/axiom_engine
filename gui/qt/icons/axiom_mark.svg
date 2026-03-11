@@ -1,5 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
-  <rect x="6" y="6" width="52" height="52" rx="12" stroke="#00E5FF" stroke-width="4"/>
-  <path d="M14 38c4-8 8-8 12 0s8 8 12 0s8-8 12 0" stroke="#00E5FF" stroke-width="3" stroke-linecap="round"/>
-  <circle cx="32" cy="24" r="4" fill="#FFB300"/>
+  <defs>
+    <linearGradient id="frameGrad" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#95E6CB"/>
+      <stop offset="1" stop-color="#7AD3FF"/>
+    </linearGradient>
+    <linearGradient id="coreGrad" x1="20" y1="14" x2="44" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E6B450"/>
+      <stop offset="1" stop-color="#FFB454"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="6" y="6" width="52" height="52" rx="12" fill="#0A1224" stroke="url(#frameGrad)" stroke-width="3"/>
+
+  <path d="M18 46L30 16H34L46 46" stroke="url(#coreGrad)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M24 34H40" stroke="url(#coreGrad)" stroke-width="3.4" stroke-linecap="round"/>
+
+  <path d="M14 42c3.2-4.6 6.4-4.6 9.6 0s6.4 4.6 9.6 0s6.4-4.6 9.6 0s6.4 4.6 9.6 0" stroke="#95E6CB" stroke-width="2.2" stroke-linecap="round" opacity="0.95"/>
+
+  <circle cx="47" cy="18" r="3" fill="#7AD3FF"/>
 </svg>

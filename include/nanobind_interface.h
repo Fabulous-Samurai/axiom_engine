@@ -6,6 +6,8 @@
  * minimal overhead and automatic type conversions.
  */
 
+#pragma once
+
 #ifndef NANOBIND_INTERFACE_H
 #define NANOBIND_INTERFACE_H
 
@@ -13,11 +15,14 @@
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
-#include <nanobind/stl.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
+#include <nanobind/stl/map.h>
+#include <nanobind/stl/optional.h>
 #include <nanobind/operators.h>
 
 #ifdef ENABLE_EIGEN
-#include <nanobind/eigen.h>
+#include <nanobind/eigen/dense.h>
 #include "eigen_engine.h"
 #endif
 
@@ -67,8 +72,8 @@ public:
     
 #ifdef ENABLE_EIGEN
     // Eigen integration with zero-copy
-    AXIOM::EigenEngine::Matrix ConvertFromNumPyMatrix(const nb::ndarray<nb::numpy, double, nb::shape<nb::any, nb::any>>& array);
-    nb::ndarray<nb::numpy, double, nb::shape<nb::any, nb::any>> ConvertToNumPyMatrix(const AXIOM::EigenEngine::Matrix& matrix);
+    AXIOM::EigenEngine::Matrix ConvertFromNumPyMatrix(const nb::ndarray<nb::numpy, double, nb::ndim<2>>& array);
+    nb::ndarray<nb::numpy, double, nb::ndim<2>> ConvertToNumPyMatrix(const AXIOM::EigenEngine::Matrix& matrix);
     
     AXIOM::EigenEngine::Vector ConvertFromNumPyVector(const nb::ndarray<nb::numpy, double>& array);
     nb::ndarray<nb::numpy, double> ConvertToNumPyVector(const AXIOM::EigenEngine::Vector& vector);
@@ -175,7 +180,7 @@ namespace Nanobind {
     
     // Quick Python execution
     nb::object Execute(const std::string& code);
-    nb::object Import(const std::string& module);
+    nb::object Import(const std::string& module_name);
     
     // Fast numpy conversions
     template<typename T>
@@ -186,8 +191,8 @@ namespace Nanobind {
     
 #ifdef ENABLE_EIGEN
     // Eigen-NumPy bridge
-    AXIOM::EigenEngine::Matrix MatrixFromNumPy(const nb::ndarray<nb::numpy, double, nb::shape<nb::any, nb::any>>& array);
-    nb::ndarray<nb::numpy, double, nb::shape<nb::any, nb::any>> MatrixToNumPy(const AXIOM::EigenEngine::Matrix& matrix);
+    AXIOM::EigenEngine::Matrix MatrixFromNumPy(const nb::ndarray<nb::numpy, double, nb::ndim<2>>& array);
+    nb::ndarray<nb::numpy, double, nb::ndim<2>> MatrixToNumPy(const AXIOM::EigenEngine::Matrix& matrix);
 #endif
     
     // Performance helpers

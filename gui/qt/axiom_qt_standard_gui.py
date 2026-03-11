@@ -2,6 +2,7 @@
 """AXIOM Standard GUI - Qt edition."""
 
 from pathlib import Path
+import queue
 import os
 import shlex
 import subprocess
@@ -9,9 +10,14 @@ import sys
 
 from gui.python.gui_helpers import CppEngineInterface
 
+
+NO_OUTPUT_TEXT = "(no output)"
+EXECUTION_FAILED_TEXT = "Execution failed"
+APP_ICON_NAME = "axiom_mark.svg"
+
 try:
-    from PySide6.QtCore import Qt
-    from PySide6.QtGui import QIcon
+    from PySide6.QtCore import QTimer, Qt
+    from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
     from PySide6.QtWidgets import (
         QApplication,
         QFrame,
@@ -37,14 +43,32 @@ class AxiomQtStandardWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._icon_dir = Path(__file__).with_name("icons")
-        app_icon = self._resolve_icon("axiom_mark.svg")
+        app_icon = self._resolve_icon(APP_ICON_NAME)
         if app_icon:
             self.setWindowIcon(app_icon)
         self.setWindowTitle("AXIOM Standard GUI - Surgical Harmonic")
         self.resize(1180, 760)
         self.engine_exe = self._locate_engine()
         self.engine = CppEngineInterface(self.engine_exe)
+        self._ui_tasks = queue.Queue()
         self._build_ui()
+        self._start_ui_task_drain()
+
+    def _start_ui_task_drain(self):
+        self._ui_task_timer = QTimer(self)
+        self._ui_task_timer.timeout.connect(self._drain_ui_tasks)
+        self._ui_task_timer.start(16)
+
+    def _run_on_ui(self, fn):
+        self._ui_tasks.put(fn)
+
+    def _drain_ui_tasks(self):
+        while True:
+            try:
+                fn = self._ui_tasks.get_nowait()
+            except queue.Empty:
+                break
+            fn()
 
     def _build_ui(self):
         root = QWidget()
@@ -59,7 +83,7 @@ class AxiomQtStandardWindow(QMainWindow):
         hh.setContentsMargins(10, 8, 10, 8)
         brand = QLabel()
         brand.setObjectName("BrandMark")
-        brand_icon = self._resolve_icon("axiom_mark.svg")
+        brand_icon = self._resolve_icon(APP_ICON_NAME)
         if brand_icon:
             brand.setPixmap(brand_icon.pixmap(22, 22))
 
@@ -77,7 +101,9 @@ class AxiomQtStandardWindow(QMainWindow):
         hh.addWidget(brand)
         hh.addLayout(title_box)
         hh.addStretch(1)
-        hh.addWidget(QLabel("Simple mode"))
+        mode_lbl = QLabel("Simple mode")
+        mode_lbl.setObjectName("Hint")
+        hh.addWidget(mode_lbl)
         outer.addWidget(header)
 
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -87,14 +113,20 @@ class AxiomQtStandardWindow(QMainWindow):
         left.setObjectName("Card")
         lv = QVBoxLayout(left)
         lv.setContentsMargins(8, 8, 8, 8)
-        lv.addWidget(QLabel("Expression"))
+        expr_hdr = QLabel("Expression")
+        expr_hdr.setObjectName("PanelHeader")
+        lv.addWidget(expr_hdr)
         self.input = QLineEdit()
+        self.input.setObjectName("CommandPalette")
         self.input.setPlaceholderText("2+3*4")
         lv.addWidget(self.input)
         self.run_btn = QPushButton("Execute")
         lv.addWidget(self.run_btn)
-        lv.addWidget(QLabel("Output"))
+        out_hdr = QLabel("Output")
+        out_hdr.setObjectName("PanelHeader")
+        lv.addWidget(out_hdr)
         self.output = QPlainTextEdit()
+        self.output.setObjectName("CommandConsole")
         self.output.setReadOnly(True)
         lv.addWidget(self.output, 1)
         split.addWidget(left)
@@ -103,7 +135,9 @@ class AxiomQtStandardWindow(QMainWindow):
         right.setObjectName("Card")
         rv = QVBoxLayout(right)
         rv.setContentsMargins(8, 8, 8, 8)
-        rv.addWidget(QLabel("Quick Actions"))
+        quick_hdr = QLabel("Quick Actions")
+        quick_hdr.setObjectName("PanelHeader")
+        rv.addWidget(quick_hdr)
         for label, expr in (
             ("Algebra", "2+3*4"),
             ("Linear", "--mode=linear solve([2,3;1,4],[5;6])"),
@@ -151,11 +185,58 @@ class AxiomQtStandardWindow(QMainWindow):
     def _resolve_icon(self, icon_name: str):
         icon_path = self._icon_dir / icon_name
         if icon_path.exists():
-            return QIcon(str(icon_path))
+            icon = QIcon(str(icon_path))
+            if not icon.isNull():
+                return icon
+        if icon_name == APP_ICON_NAME:
+            return self._build_fallback_axiom_icon()
         return None
+
+    def _build_fallback_axiom_icon(self):
+        pixmap = QPixmap(64, 64)
+        pixmap.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        painter.setPen(QPen(QColor("#7ad3ff"), 3))
+        painter.setBrush(QColor("#0a1224"))
+        painter.drawRoundedRect(6, 6, 52, 52, 12, 12)
+
+        painter.setPen(QPen(QColor("#ffb454"), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.drawLine(18, 46, 30, 16)
+        painter.drawLine(30, 16, 34, 16)
+        painter.drawLine(34, 16, 46, 46)
+        painter.setPen(QPen(QColor("#ffb454"), 3.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(24, 34, 40, 34)
+
+        painter.setPen(QPen(QColor("#95e6cb"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        wave = QPainterPath()
+        wave.moveTo(14, 42)
+        wave.cubicTo(17, 37, 20, 37, 23, 42)
+        wave.cubicTo(26, 47, 29, 47, 32, 42)
+        wave.cubicTo(35, 37, 38, 37, 41, 42)
+        wave.cubicTo(44, 47, 47, 47, 50, 42)
+        painter.drawPath(wave)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#7ad3ff"))
+        painter.drawEllipse(44, 15, 6, 6)
+
+        painter.end()
+        return QIcon(pixmap)
 
     def _prefill(self, expression):
         self.input.setText(expression)
+
+    def _append_result_lines(self, result_text: str):
+        text = str(result_text)
+        lines = text.splitlines() if text else [NO_OUTPUT_TEXT]
+        if not lines:
+            self.output.appendPlainText(NO_OUTPUT_TEXT)
+            return
+        for line in lines:
+            self.output.appendPlainText(line if line else " ")
 
     def closeEvent(self, event):
         try:
@@ -214,11 +295,10 @@ class AxiomQtStandardWindow(QMainWindow):
             def apply_result():
                 self.run_btn.setEnabled(True)
                 if result.get("success"):
-                    self.output.appendPlainText(result.get("result", "(no output)"))
+                    self._append_result_lines(result.get("result", NO_OUTPUT_TEXT))
                 else:
-                    self.output.appendPlainText(result.get("error", "Execution failed"))
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(0, apply_result)
+                    self._append_result_lines(result.get("error", EXECUTION_FAILED_TEXT))
+            self._run_on_ui(apply_result)
 
         self.engine.execute_command_async(command, on_result)
 

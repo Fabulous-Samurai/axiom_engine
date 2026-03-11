@@ -1,12 +1,27 @@
 #!/usr/bin/env python3
 """Test axiom.exe execution"""
 import sys
-sys.path.insert(0, "gui/python")
+from pathlib import Path
+
+repo_root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(repo_root / "gui" / "python"))
 
 from gui_helpers import CppEngineInterface
 
+
+def resolve_axiom_exe() -> str:
+    candidates = [
+        repo_root / "build" / "axiom.exe",
+        repo_root / "ninja-build" / "axiom.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    raise FileNotFoundError("axiom.exe not found in build/ or ninja-build/")
+
+
 # Test the engine
-engine = CppEngineInterface("ninja-build/axiom.exe")
+engine = CppEngineInterface(resolve_axiom_exe())
 
 tests = [
     "2+2",

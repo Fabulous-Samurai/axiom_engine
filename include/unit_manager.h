@@ -31,8 +31,8 @@ public:
     UnitManager();
     
     // Core functionality
-    EngineResult ConvertUnit(double value, const std::string& from_unit, const std::string& to_unit);
-    EngineResult ConvertTemperature(double value, const std::string& from_unit, const std::string& to_unit);
+    AXIOM::EngineResult ConvertUnit(double value, const std::string& from_unit, const std::string& to_unit);
+    AXIOM::EngineResult ConvertTemperature(double value, const std::string& from_unit, const std::string& to_unit);
     bool AreCompatible(const std::string& unit1, const std::string& unit2);
     std::string GetCanonicalUnit(UnitType type);
     

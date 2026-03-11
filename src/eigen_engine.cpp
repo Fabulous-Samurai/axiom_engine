@@ -15,6 +15,8 @@
 #include <thread>
 #include <unordered_map>
 #include <iomanip>
+#include <complex>
+#include <unsupported/Eigen/FFT>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -22,10 +24,23 @@
 
 namespace AXIOM {
 
-EigenEngine::EigenEngine() 
-    : optimization_level_(CPUOptimizationLevel::SIMD)
-    , simd_enabled_(true)
-    , num_threads_(std::thread::hardware_concurrency()) {
+namespace {
+
+int NextPowerOfTwo(int value) {
+    if (value <= 1) {
+        return 1;
+    }
+
+    int n = 1;
+    while (n < value) {
+        n <<= 1;
+    }
+    return n;
+}
+
+} // namespace
+
+EigenEngine::EigenEngine() {
     
     // Initialize Eigen with optimal settings for Senna Speed!
     Eigen::initParallel();
@@ -92,7 +107,7 @@ void EigenEngine::SetNumThreads(int num_threads) {
 #endif
 }
 
-EigenEngine::Matrix EigenEngine::CreateMatrix(const std::vector<std::vector<double>>& data) {
+EigenEngine::Matrix EigenEngine::CreateMatrix(const std::vector<std::vector<double>>& data) const {
     SENNA_SPEED_EIGEN("CreateMatrix");
     
     if (data.empty()) return Matrix();
@@ -110,7 +125,7 @@ EigenEngine::Matrix EigenEngine::CreateMatrix(const std::vector<std::vector<doub
     return mat;
 }
 
-EigenEngine::Vector EigenEngine::CreateVector(const std::vector<double>& data) {
+EigenEngine::Vector EigenEngine::CreateVector(const std::vector<double>& data) const {
     SENNA_SPEED_EIGEN("CreateVector");
     
     Vector vec(data.size());
@@ -121,7 +136,7 @@ EigenEngine::Vector EigenEngine::CreateVector(const std::vector<double>& data) {
     return vec;
 }
 
-EigenEngine::Matrix EigenEngine::MatrixMultiply(const Matrix& A, const Matrix& B) {
+EigenEngine::Matrix EigenEngine::MatrixMultiply(const Matrix& A, const Matrix& B) const {
     SENNA_SPEED_EIGEN("MatrixMultiply");
     
     if (optimization_level_ >= CPUOptimizationLevel::Vectorized) {
@@ -131,7 +146,7 @@ EigenEngine::Matrix EigenEngine::MatrixMultiply(const Matrix& A, const Matrix& B
     return A * B;
 }
 
-EigenEngine::Vector EigenEngine::MatrixVectorMultiply(const Matrix& A, const Vector& x) {
+EigenEngine::Vector EigenEngine::MatrixVectorMultiply(const Matrix& A, const Vector& x) const {
     SENNA_SPEED_EIGEN("MatrixVectorMultiply");
     
     if (optimization_level_ >= CPUOptimizationLevel::Vectorized) {
@@ -141,22 +156,22 @@ EigenEngine::Vector EigenEngine::MatrixVectorMultiply(const Matrix& A, const Vec
     return A * x;
 }
 
-EigenEngine::Matrix EigenEngine::MatrixAdd(const Matrix& A, const Matrix& B) {
+EigenEngine::Matrix EigenEngine::MatrixAdd(const Matrix& A, const Matrix& B) const {
     SENNA_SPEED_EIGEN("MatrixAdd");
     return A + B;
 }
 
-EigenEngine::Matrix EigenEngine::MatrixSubtract(const Matrix& A, const Matrix& B) {
+EigenEngine::Matrix EigenEngine::MatrixSubtract(const Matrix& A, const Matrix& B) const {
     SENNA_SPEED_EIGEN("MatrixSubtract");
     return A - B;
 }
 
-double EigenEngine::Determinant(const Matrix& A) {
+double EigenEngine::Determinant(const Matrix& A) const {
     SENNA_SPEED_EIGEN("Determinant");
     return A.determinant();
 }
 
-EigenEngine::Matrix EigenEngine::Inverse(const Matrix& A) {
+EigenEngine::Matrix EigenEngine::Inverse(const Matrix& A) const {
     SENNA_SPEED_EIGEN("Inverse");
     
     // Use optimal solver based on matrix properties
@@ -166,7 +181,7 @@ EigenEngine::Matrix EigenEngine::Inverse(const Matrix& A) {
         if (lu.isInvertible()) {
             return lu.inverse();
         } else {
-            throw std::runtime_error("Matrix is not invertible");
+            throw std::invalid_argument("Matrix is not invertible");
         }
     } else {
         // For non-square matrices, return pseudo-inverse
@@ -174,12 +189,12 @@ EigenEngine::Matrix EigenEngine::Inverse(const Matrix& A) {
     }
 }
 
-EigenEngine::Matrix EigenEngine::Transpose(const Matrix& A) {
+EigenEngine::Matrix EigenEngine::Transpose(const Matrix& A) const {
     SENNA_SPEED_EIGEN("Transpose");
     return A.transpose();
 }
 
-EigenEngine::Matrix EigenEngine::PseudoInverse(const Matrix& A) {
+EigenEngine::Matrix EigenEngine::PseudoInverse(const Matrix& A) const {
     SENNA_SPEED_EIGEN("PseudoInverse");
     
     // Use SVD for numerical stability
@@ -197,11 +212,11 @@ EigenEngine::Matrix EigenEngine::PseudoInverse(const Matrix& A) {
            svd.matrixU().adjoint();
 }
 
-std::pair<EigenEngine::Vector, EigenEngine::Matrix> EigenEngine::EigenDecomposition(const Matrix& A) {
+std::pair<EigenEngine::Vector, EigenEngine::Matrix> EigenEngine::EigenDecomposition(const Matrix& A) const {
     SENNA_SPEED_EIGEN("EigenDecomposition");
     
     if (A.rows() != A.cols()) {
-        throw std::runtime_error("Eigendecomposition requires square matrix");
+        throw std::invalid_argument("Eigendecomposition requires square matrix");
     }
     
     // Check if matrix is symmetric for optimization
@@ -216,14 +231,14 @@ std::pair<EigenEngine::Vector, EigenEngine::Matrix> EigenEngine::EigenDecomposit
     }
 }
 
-std::tuple<EigenEngine::Matrix, EigenEngine::Vector, EigenEngine::Matrix> EigenEngine::SVD(const Matrix& A) {
+std::tuple<EigenEngine::Matrix, EigenEngine::Vector, EigenEngine::Matrix> EigenEngine::SVD(const Matrix& A) const {
     SENNA_SPEED_EIGEN("SVD");
     
     Eigen::JacobiSVD<Matrix> svd(A, Eigen::ComputeFullU | Eigen::ComputeFullV);
     return std::make_tuple(svd.matrixU(), svd.singularValues(), svd.matrixV());
 }
 
-EigenEngine::Vector EigenEngine::SolveLinearSystem(const Matrix& A, const Vector& b) {
+EigenEngine::Vector EigenEngine::SolveLinearSystem(const Matrix& A, const Vector& b) const {
     SENNA_SPEED_EIGEN("SolveLinearSystem");
     
     // Choose optimal solver based on matrix properties
@@ -246,7 +261,7 @@ EigenEngine::Vector EigenEngine::SolveLinearSystem(const Matrix& A, const Vector
     }
 }
 
-EigenEngine::Matrix EigenEngine::SolveMultipleRHS(const Matrix& A, const Matrix& B) {
+EigenEngine::Matrix EigenEngine::SolveMultipleRHS(const Matrix& A, const Matrix& B) const {
     SENNA_SPEED_EIGEN("SolveMultipleRHS");
     
     if (A.rows() == A.cols()) {
@@ -257,24 +272,127 @@ EigenEngine::Matrix EigenEngine::SolveMultipleRHS(const Matrix& A, const Matrix&
     }
 }
 
-double EigenEngine::Mean(const Vector& data) {
+EigenEngine::Vector EigenEngine::FFT(const Vector& signal) const {
+    SENNA_SPEED_EIGEN("FFT");
+
+    if (signal.size() == 0) {
+        return Vector();
+    }
+
+    Eigen::FFT<double> fft;
+    std::vector<double> in(signal.data(), signal.data() + signal.size());
+    std::vector<std::complex<double>> spectrum;
+    fft.fwd(spectrum, in);
+
+    // Return magnitude spectrum for stable real-valued API semantics.
+    Vector magnitude(static_cast<Eigen::Index>(spectrum.size()));
+    for (Eigen::Index i = 0; i < magnitude.size(); ++i) {
+        magnitude(i) = std::abs(spectrum[static_cast<std::size_t>(i)]);
+    }
+
+    return magnitude;
+}
+
+EigenEngine::Vector EigenEngine::IFFT(const Vector& spectrum) const {
+    SENNA_SPEED_EIGEN("IFFT");
+
+    if (spectrum.size() == 0) {
+        return Vector();
+    }
+
+    Eigen::FFT<double> fft;
+    std::vector<std::complex<double>> freq(static_cast<std::size_t>(spectrum.size()));
+    for (Eigen::Index i = 0; i < spectrum.size(); ++i) {
+        freq[static_cast<std::size_t>(i)] = std::complex<double>(spectrum(i), 0.0);
+    }
+
+    std::vector<std::complex<double>> time_domain;
+    fft.inv(time_domain, freq);
+
+    Vector restored(static_cast<Eigen::Index>(time_domain.size()));
+    for (Eigen::Index i = 0; i < restored.size(); ++i) {
+        restored(i) = time_domain[static_cast<std::size_t>(i)].real();
+    }
+
+    return restored;
+}
+
+EigenEngine::Vector EigenEngine::Convolution(const Vector& signal1, const Vector& signal2) const {
+    SENNA_SPEED_EIGEN("Convolution");
+
+    if (signal1.size() == 0 || signal2.size() == 0) {
+        return Vector();
+    }
+
+    const int n1 = static_cast<int>(signal1.size());
+    const int n2 = static_cast<int>(signal2.size());
+    const int out_size = n1 + n2 - 1;
+    const int fft_size = NextPowerOfTwo(out_size);
+
+    std::vector<std::complex<double>> a(static_cast<std::size_t>(fft_size), std::complex<double>(0.0, 0.0));
+    std::vector<std::complex<double>> b(static_cast<std::size_t>(fft_size), std::complex<double>(0.0, 0.0));
+
+    for (int i = 0; i < n1; ++i) {
+        a[static_cast<std::size_t>(i)] = std::complex<double>(signal1(i), 0.0);
+    }
+    for (int i = 0; i < n2; ++i) {
+        b[static_cast<std::size_t>(i)] = std::complex<double>(signal2(i), 0.0);
+    }
+
+    Eigen::FFT<double> fft;
+    std::vector<std::complex<double>> A;
+    std::vector<std::complex<double>> B;
+    fft.fwd(A, a);
+    fft.fwd(B, b);
+
+    for (int i = 0; i < fft_size; ++i) {
+        A[static_cast<std::size_t>(i)] *= B[static_cast<std::size_t>(i)];
+    }
+
+    std::vector<std::complex<double>> convolved;
+    fft.inv(convolved, A);
+
+    Vector out(out_size);
+    for (int i = 0; i < out_size; ++i) {
+        out(i) = convolved[static_cast<std::size_t>(i)].real();
+    }
+
+    return out;
+}
+
+EigenEngine::Vector EigenEngine::CrossCorrelation(const Vector& signal1, const Vector& signal2) const {
+    SENNA_SPEED_EIGEN("CrossCorrelation");
+
+    if (signal1.size() == 0 || signal2.size() == 0) {
+        return Vector();
+    }
+
+    Vector reversed(signal2.size());
+    for (Eigen::Index i = 0; i < signal2.size(); ++i) {
+        reversed(i) = signal2(signal2.size() - 1 - i);
+    }
+
+    return Convolution(signal1, reversed);
+}
+
+double EigenEngine::Mean(const Vector& data) const {
     SENNA_SPEED_EIGEN("Mean");
     return data.mean();
 }
 
-double EigenEngine::StandardDeviation(const Vector& data) {
+double EigenEngine::StandardDeviation(const Vector& data) const {
     SENNA_SPEED_EIGEN("StandardDeviation");
     Vector centered = data.array() - data.mean();
     return std::sqrt(centered.array().square().mean());
 }
 
-double EigenEngine::Variance(const Vector& data) {
+double EigenEngine::Variance(const Vector& data) const {
     SENNA_SPEED_EIGEN("Variance");
     Vector centered = data.array() - data.mean();
     return centered.array().square().mean();
 }
 
-EigenEngine::Vector EigenEngine::Normalize(const Vector& data) {
+EigenEngine::Vector EigenEngine::Normalize(const Vector& data) const {
     SENNA_SPEED_EIGEN("Normalize");
     
     double mean_val = data.mean();
@@ -390,8 +508,7 @@ void EigenEngine::EnableSSE41() {
 
 // Performance Timer implementation
 PerformanceTimer::PerformanceTimer(const std::string& operation_name)
-    : operation_name_(operation_name)
-    , start_time_(std::chrono::high_resolution_clock::now()) {
+    : operation_name_(operation_name) {
 }
 
 PerformanceTimer::~PerformanceTimer() {

@@ -1,4 +1,4 @@
-# AXIOM Engine - Linear System Parser API Documentation
+﻿# AXIOM Engine - Linear System Parser API Documentation
 
 ## Overview
 
@@ -15,20 +15,24 @@ The Linear System Parser provides multiple interfaces for solving systems of lin
 ## Matrix Notation Solver (`HandleSolve`)
 
 ### Syntax
+
 ```
 solve [[matrix]] [vector]
 ```
 
 ### Description
+
 Parses matrix notation and solves the linear system **Ax = b** using Gaussian elimination with partial pivoting.
 
 ### Parameters
+
 - **matrix**: Square coefficient matrix in double-bracket notation `[[row1],[row2],...]`
 - **vector**: Right-hand side vector in bracket notation `[b1, b2, ...]`
 
 ### Examples
 
-**2x2 System**
+### 2x2 System
+
 ```cpp
 LinearSystemParser parser;
 auto result = parser.ParseAndExecute("solve [[2,1],[1,3]] [8,13]");
@@ -37,20 +41,24 @@ auto result = parser.ParseAndExecute("solve [[2,1],[1,3]] [8,13]");
 // Solution: x = 2.2, y = 3.6
 ```
 
-**3x3 System**
+### 3x3 System
+
 ```cpp
 auto result = parser.ParseAndExecute("solve [[2,1,1],[1,3,2],[1,0,0]] [4,5,6]");
 // Solves 3x3 system
 ```
 
-**Identity Matrix (Trivial)**
+### Identity Matrix (Trivial)
+
 ```cpp
 auto result = parser.ParseAndExecute("solve [[1,0],[0,1]] [5,3]");
 // Solution: x = 5, y = 3
 ```
 
 ### Return Value
+
 Returns `EngineResult` containing:
+
 - **Success**: `std::vector<double>` with solution values
 - **Failure**: Error code (`LinAlgErr::ParseError`, `LinAlgErr::MatrixMismatch`, `LinAlgErr::NoSolution`)
 
@@ -60,11 +68,12 @@ Returns `EngineResult` containing:
 |-------|-----------|
 | `ParseError` | Invalid matrix/vector syntax |
 | `MatrixMismatch` | Matrix not square or dimension mismatch with vector |
-| `NoSolution` | Singular matrix (determinant ≈ 0) |
+| `NoSolution` | Singular matrix (determinant â‰ˆ 0) |
 
 ### Implementation Details
 
 The `HandleSolve` function:
+
 1. Strips "solve" prefix from input
 2. Removes all whitespace
 3. Extracts matrix substring (between `[[` and `]]`)
@@ -75,7 +84,8 @@ The `HandleSolve` function:
 8. Calls `solve_linear_system()` (Gaussian elimination)
 9. Returns solution or error
 
-**Key Features:**
+### Key Features:
+
 - **Space-tolerant**: Whitespace is ignored
 - **Flexible vector format**: Accepts `[1,2,3]` or `[[1],[2],[3]]`
 - **Robust parsing**: Reuses existing `ParseMatrixString()` infrastructure
@@ -88,22 +98,29 @@ The `HandleSolve` function:
 The underlying `solve_linear_system()` uses:
 
 ### Pseudocode
+
 ```
+
 1. Construct augmented matrix [A|b]
 2. For each column i:
-   a. Find row with maximum |M[k][i]| (k >= i) → pivot row
+
+   a. Find row with maximum |M[k][i]| (k >= i) â†’ pivot row
    b. Swap current row with pivot row
-   c. Check if M[i][i] ≈ 0 → NoSolution
+   c. Check if M[i][i] â‰ˆ 0 â†’ NoSolution
    d. Scale row i so M[i][i] = 1
    e. Eliminate column i in all other rows
+
 3. Extract solution from diagonal matrix
+
 ```
 
 ### Complexity
-- **Time**: O(n³) for n×n system
-- **Space**: O(n²) for augmented matrix
+
+- **Time**: O(nÂ³) for nÃ—n system
+- **Space**: O(nÂ²) for augmented matrix
 
 ### Numerical Stability
+
 - Partial pivoting improves stability
 - Tolerance: |M[i][i]| < 1e-9 considered singular
 - No explicit row scaling (implicit via division)
@@ -113,6 +130,7 @@ The underlying `solve_linear_system()` uses:
 ## Usage Examples
 
 ### Basic Usage
+
 ```cpp
 #include "linear_system_parser.h"
 
@@ -130,6 +148,7 @@ if (result.HasResult()) {
 ```
 
 ### Error Handling
+
 ```cpp
 auto result = parser.ParseAndExecute("solve [[1,2],[2,4]] [3,6]");
 
@@ -145,6 +164,7 @@ if (result.HasErrors()) {
 ```
 
 ### Programmatic Matrix Input
+
 ```cpp
 // Construct matrix string programmatically
 std::ostringstream oss;
@@ -174,12 +194,12 @@ auto result = parser.ParseAndExecute(oss.str());
 
 | Method | Command | Use Case | Complexity |
 |--------|---------|----------|------------|
-| **Gaussian Elimination** | `solve [[A]] [b]` | General purpose, stable | O(n³) |
-| **Cramer's Rule** | `cramer eq1; eq2` | Small systems (n≤3), explicit | O(n·n!) ≈ O(n⁴) |
-| **QR Decomposition** | `qr [[A]]` | Least squares, overdetermined | O(n³) |
-| **Eigen Solver** | `eigen [[A]]` | Eigenvalues/eigenvectors | O(n³) |
+| **Gaussian Elimination** | `solve [[A]] [b]` | General purpose, stable | O(nÂ³) |
+| **Cramer's Rule** | `cramer eq1; eq2` | Small systems (nâ‰¤3), explicit | O(nÂ·n!) â‰ˆ O(nâ´) |
+| **QR Decomposition** | `qr [[A]]` | Least squares, overdetermined | O(nÂ³) |
+| **Eigen Solver** | `eigen [[A]]` | Eigenvalues/eigenvectors | O(nÂ³) |
 
-**Recommendation**: Use `solve` (Gaussian) for most cases. Use Cramer only for symbolic verification or n≤3.
+**Recommendation**: Use `solve` (Gaussian) for most cases. Use Cramer only for symbolic verification or nâ‰¤3.
 
 ---
 
@@ -216,18 +236,20 @@ void thread_func() {
 ## Performance Considerations
 
 ### Optimization Tips
+
 1. **Reuse parser instance** - Avoid repeated construction
 2. **Prevalidate dimensions** - Check matrix/vector sizes before parsing
 3. **Use Eigen for large systems** - Better SIMD optimization for n > 100
 4. **Batch operations** - Group related solves together
 
 ### Benchmarks (v3.1)
+
 | System Size | Time (avg) | Throughput |
 |-------------|------------|------------|
-| 2×2 | 0.015 ms | 66,667 ops/s |
-| 3×3 | 0.022 ms | 45,455 ops/s |
-| 5×5 | 0.048 ms | 20,833 ops/s |
-| 10×10 | 0.153 ms | 6,536 ops/s |
+| 2Ã—2 | 0.015 ms | 66,667 ops/s |
+| 3Ã—3 | 0.022 ms | 45,455 ops/s |
+| 5Ã—5 | 0.048 ms | 20,833 ops/s |
+| 10Ã—10 | 0.153 ms | 6,536 ops/s |
 
 *Run `benchmark_suite` for platform-specific results*
 
@@ -259,3 +281,4 @@ Planned features for future versions:
 - [Error Codes](dynamic_calc_types.h) - LinAlgErr enum
 - [Eigen Engine API](eigen_engine.h) - Alternative high-performance solver
 - [Test Suite](../tests/giga_test_suite.cpp) - Comprehensive examples
+

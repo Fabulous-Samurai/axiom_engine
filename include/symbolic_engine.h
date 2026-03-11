@@ -11,7 +11,7 @@
 class SymbolicEngine {
 private:
     Arena symbolic_arena_;
-    std::unordered_map<std::string, NodePtr> symbol_table_;
+    std::unordered_map<std::string, AXIOM::NodePtr> symbol_table_;
     
 public:
     // Advanced algebraic operations
@@ -24,6 +24,7 @@ public:
     EngineResult Integrate(const std::string& expression, const std::string& variable);
     EngineResult DefiniteIntegral(const std::string& expr, const std::string& var, double a, double b);
     EngineResult PartialDerivative(const std::string& expr, const std::string& var);
+    EngineResult Differentiate(const std::string& expr, const std::string& var) { return PartialDerivative(expr, var); }
     EngineResult TaylorSeries(const std::string& expr, const std::string& var, double point, int order);
     
     // Equation solving

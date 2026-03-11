@@ -1,0 +1,67 @@
+{
+  "benchmarks": [
+    {
+      "name": "scalar_throughput",
+      "iterations": 1000000,
+      "elapsed_ms": 10462.5,
+      "ops_per_sec": 95579.3,
+      "latency_us": 10.4625
+    },
+    {
+      "name": "typed_fast_path",
+      "iterations": 1000000,
+      "elapsed_ms": 1.8356,
+      "ops_per_sec": 5.44781e+08,
+      "latency_us": 0.0018356
+    },
+    {
+      "name": "zero_copy_vector_transfer",
+      "iterations": 10000,
+      "elapsed_ms": 105.267,
+      "ops_per_sec": 94996.6,
+      "latency_us": 10.5267
+    },
+    {
+      "name": "lock_free_queue_ipc",
+      "iterations": 1000000,
+      "elapsed_ms": 23.5956,
+      "ops_per_sec": 4.23808e+07,
+      "latency_us": 0.0235956
+    },
+    {
+      "name": "mantis_scalar_f32",
+      "iterations": 10000000,
+      "elapsed_ms": 2.166,
+      "ops_per_sec": 4.61681e+09,
+      "latency_us": 0.0002166
+    },
+    {
+      "name": "mantis_simd_f32",
+      "iterations": 10000000,
+      "elapsed_ms": 5.1986,
+      "ops_per_sec": 1.92359e+09,
+      "latency_us": 0.00051986
+    },
+    {
+      "name": "mantis_scalar_i8",
+      "iterations": 10000000,
+      "elapsed_ms": 7.8108,
+      "ops_per_sec": 1.28028e+09,
+      "latency_us": 0.00078108
+    },
+    {
+      "name": "mantis_simd_i8",
+      "iterations": 10000000,
+      "elapsed_ms": 7.4237,
+      "ops_per_sec": 1.34704e+09,
+      "latency_us": 0.00074237
+    },
+    {
+      "name": "mantis_astar_solver",
+      "iterations": 100000,
+      "elapsed_ms": 121.99,
+      "ops_per_sec": 819737,
+      "latency_us": 1.2199
+    }
+  ]
+}

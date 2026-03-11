@@ -5,6 +5,8 @@
  * İçinde C++'a ait (class, std::vector, Eigen) HİÇBİR ŞEY olamaz!
  */
 
+#pragma once
+
 #ifndef SELECTIVE_DISPATCHER_CAPI_H
 #define SELECTIVE_DISPATCHER_CAPI_H
 

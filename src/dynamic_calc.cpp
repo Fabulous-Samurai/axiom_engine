@@ -16,8 +16,32 @@
 #include "plot_parser.h"
 #include <memory>
 
+namespace {
+
+constexpr std::size_t kInvalidModeIndex = static_cast<std::size_t>(-1);
+
+} // namespace
+
 namespace AXIOM
 {
+
+    std::size_t DynamicCalc::ModeToIndex(CalculationMode mode) noexcept
+    {
+        const auto raw = static_cast<std::size_t>(mode);
+        return raw < kModeSlots ? raw : kInvalidModeIndex;
+    }
+
+    IParser* DynamicCalc::ParserForMode(CalculationMode mode) const noexcept
+    {
+        const std::size_t idx = ModeToIndex(mode);
+        if (idx == kInvalidModeIndex) [[unlikely]]
+        {
+            return nullptr;
+        }
+
+        const auto& slot = parsers_[idx];
+        return slot ? slot.get() : nullptr;
+    }
 
     DynamicCalc::DynamicCalc()
     {
@@ -26,12 +50,12 @@ namespace AXIOM
         symbolic_engine_   = std::make_unique<SymbolicEngine>();
         unit_manager_      = std::make_unique<UnitManager>();
 
-        parsers_.emplace(CalculationMode::ALGEBRAIC,     std::make_unique<AlgebraicParser>());
-        parsers_.emplace(CalculationMode::LINEAR_SYSTEM, std::make_unique<LinearSystemParser>());
-        parsers_.emplace(CalculationMode::STATISTICS,    std::make_unique<StatisticsParser>(statistics_engine_.get()));
-        parsers_.emplace(CalculationMode::SYMBOLIC,      std::make_unique<SymbolicParser>(symbolic_engine_.get()));
-        parsers_.emplace(CalculationMode::UNITS,         std::make_unique<UnitParser>(unit_manager_.get()));
-        parsers_.emplace(CalculationMode::PLOT,          std::make_unique<PlotParser>());
+        parsers_[ModeToIndex(CalculationMode::ALGEBRAIC)] = std::make_unique<AlgebraicParser>();
+        parsers_[ModeToIndex(CalculationMode::LINEAR_SYSTEM)] = std::make_unique<LinearSystemParser>();
+        parsers_[ModeToIndex(CalculationMode::STATISTICS)] = std::make_unique<StatisticsParser>(statistics_engine_.get());
+        parsers_[ModeToIndex(CalculationMode::SYMBOLIC)] = std::make_unique<SymbolicParser>(symbolic_engine_.get());
+        parsers_[ModeToIndex(CalculationMode::UNITS)] = std::make_unique<UnitParser>(unit_manager_.get());
+        parsers_[ModeToIndex(CalculationMode::PLOT)] = std::make_unique<PlotParser>();
     }
 
     DynamicCalc::~DynamicCalc() = default;
@@ -39,51 +63,29 @@ namespace AXIOM
     EngineResult DynamicCalc::Evaluate(const std::string &input)
     {
         const auto policy = AssessExpressionPolicy(input, current_mode_);
-        if (!policy.allowed)
+        if (!policy.allowed) [[unlikely]]
         {
             return CreateErrorResult(policy.error);
         }
 
-        auto it = parsers_.find(current_mode_);
-        if (it == parsers_.end())
+        IParser* parser = ParserForMode(current_mode_);
+        if (parser == nullptr) [[unlikely]]
         {
             return CreateErrorResult(CalcErr::OperationNotFound);
         }
 
-        return it->second->ParseAndExecute(input);
+        return parser->ParseAndExecute(input);
     }
 
-    bool DynamicCalc::TryEvaluateFast(double lhs, double rhs, FastArithmeticOp op, double &out) noexcept
-    {
-        switch (op)
-        {
-        case FastArithmeticOp::Add:
-            out = lhs + rhs;
-            return true;
-        case FastArithmeticOp::Subtract:
-            out = lhs - rhs;
-            return true;
-        case FastArithmeticOp::Multiply:
-            out = lhs * rhs;
-            return true;
-        case FastArithmeticOp::Divide:
-            if (rhs == 0.0)
-            {
-                return false;
-            }
-            out = lhs / rhs;
-            return true;
-        default:
-            return false;
-        }
-    }
+    // TryEvaluateFast is now inlined in dynamic_calc.h for zero-overhead dispatch.
 
     EngineResult DynamicCalc::EvaluateFast(double lhs, double rhs, FastArithmeticOp op) noexcept
     {
+        using enum FastArithmeticOp;
         double out = 0.0;
         if (!TryEvaluateFast(lhs, rhs, op, out))
         {
-            if (op == FastArithmeticOp::Divide && rhs == 0.0)
+            if (op == Divide && rhs == 0.0)
             {
                 return CreateErrorResult(CalcErr::DivideByZero);
             }
@@ -93,7 +95,7 @@ namespace AXIOM
         return CreateSuccessResult(out);
     }
 
-    void DynamicCalc::SetMode(CalculationMode mode)
+    void DynamicCalc::SetMode(CalculationMode mode) noexcept
     {
         current_mode_ = mode;
     }

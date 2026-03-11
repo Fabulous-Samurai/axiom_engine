@@ -27,16 +27,36 @@
 
 #ifdef _WIN32
     #include <windows.h>
-#else
-    #include <sys/mman.h>
-    #include <unistd.h>
 #endif
 
 #ifdef ENABLE_EIGEN
     #include <Eigen/Dense>
 #endif
 
+#include "cpu_optimization.h"
+
 namespace AXIOM {
+
+/**
+ * @brief Lightweight atomic spinlock for fast-path lock-free contention
+ */
+class Spinlock {
+    std::atomic_flag flag = ATOMIC_FLAG_INIT;
+public:
+    Spinlock() noexcept = default;
+    Spinlock(const Spinlock&) = delete;
+    Spinlock& operator=(const Spinlock&) = delete;
+    
+    void lock() noexcept {
+        while (flag.test_and_set(std::memory_order_acquire)) {
+            AXIOM_YIELD_PROCESSOR;
+        }
+    }
+    
+    void unlock() noexcept {
+        flag.clear(std::memory_order_release);
+    }
+};
 
 /**
  * @brief Harmonic lock-free arena with background recycling
@@ -48,18 +68,26 @@ class HarmonicArena {
 public:
     static constexpr size_t CACHE_LINE_SIZE = 64;
     static constexpr size_t DEFAULT_BLOCK_SIZE = 512ull * 1024ull * 1024ull; // 512MB
+    static constexpr size_t SCRIBE_PREPARE_THRESHOLD_PERCENT = 85;
 
-private:
+    // Internal block type is kept public so out-of-class member definitions can
+    // use it in signatures without static-analysis accessibility warnings.
     struct alignas(CACHE_LINE_SIZE) ArenaBlock {
-        std::unique_ptr<char[]> storage;
+        std::unique_ptr<std::byte[]> storage;
         size_t capacity;
-        std::atomic<size_t> offset{0};
-        std::atomic<bool> is_ready{false};
-        std::atomic<ArenaBlock*> next_in_pool{nullptr};
+        std::atomic<size_t> offset;
+        std::atomic<bool> is_ready;
+        std::atomic<ArenaBlock*> next_in_pool;
 
-        explicit ArenaBlock(size_t cap) : storage(std::make_unique<char[]>(cap)), capacity(cap) {}
+        explicit ArenaBlock(size_t cap) noexcept
+            : storage(std::make_unique<std::byte[]>(cap))
+            , capacity(cap)
+            , offset(0)
+            , is_ready(false)
+            , next_in_pool(nullptr) {}
     };
 
+private:
     alignas(CACHE_LINE_SIZE) std::atomic<ArenaBlock*> current_block_{nullptr};
     alignas(CACHE_LINE_SIZE) std::atomic<ArenaBlock*> spare_block_{nullptr};
     alignas(CACHE_LINE_SIZE) std::atomic<ArenaBlock*> pool_head_{nullptr};
@@ -74,17 +102,22 @@ public:
     HarmonicArena(const HarmonicArena&) = delete;
     HarmonicArena& operator=(const HarmonicArena&) = delete;
 
-    void* allocate(size_t bytes);
+    [[nodiscard]] void* allocate(size_t bytes) noexcept;
 
 private:
-    static size_t align_size(size_t size, size_t alignment) {
+    [[nodiscard]] static std::byte* reserve_from_block(ArenaBlock* block, size_t bytes) noexcept;
+    [[nodiscard]] bool try_install_spare(ArenaBlock* expected_current, ArenaBlock* replacement) noexcept;
+    [[nodiscard]] bool should_prepare_spare() const noexcept;
+
+    static size_t align_size(size_t size, size_t alignment) noexcept {
         return (size + alignment - 1) & ~(alignment - 1);
     }
 
-    void push_pool(ArenaBlock* block);
-    ArenaBlock* pop_pool();
-    void* switch_and_retry(size_t bytes);
-    void maintenance_worker(std::stop_token stop_token);
+    void push_pool(ArenaBlock* block) noexcept;
+    void recycle_spare_block(ArenaBlock* block) noexcept;
+    [[nodiscard]] ArenaBlock* pop_pool() noexcept;
+    [[nodiscard]] std::byte* switch_and_retry(size_t bytes) noexcept;
+    void maintenance_worker(std::stop_token stop_token) noexcept;
 };
 
 /**
@@ -109,12 +142,12 @@ public:
     };
 
 private:
-    void* memory_base_;
-    size_t arena_size_;
-    std::atomic<size_t> current_offset_;
-    std::atomic<size_t> peak_usage_;
-    std::atomic<size_t> allocation_count_;
-    std::atomic<size_t> free_count_;
+    void* memory_base_{nullptr};
+    size_t arena_size_{0};
+    std::atomic<size_t> current_offset_{0};
+    std::atomic<size_t> peak_usage_{0};
+    std::atomic<size_t> allocation_count_{0};
+    std::atomic<size_t> free_count_{0};
     
     // Free block management
     struct FreeBlock {
@@ -122,16 +155,16 @@ private:
         FreeBlock* next;
     };
     
-    FreeBlock* free_list_head_;
-    std::mutex free_list_mutex_;
+    FreeBlock* free_list_head_{nullptr};
+    mutable Spinlock free_list_mutex_;
     
     // Memory mapping for large allocations
-    bool use_memory_mapping_;
+    bool use_memory_mapping_{true};
     
 #ifdef _WIN32
-    HANDLE file_mapping_;
+    HANDLE file_mapping_{nullptr};
 #else
-    int backing_fd_;
+    int backing_fd_{-1};
 #endif
 
 public:
@@ -202,28 +235,38 @@ public:
     };
 
 private:
+    struct AllocationMeta {
+        size_t pool_index;
+        size_t size;
+    };
+
     struct PoolInfo {
         std::unique_ptr<MemoryArena> arena;
-        PoolType type;
-        int numa_node;
-        std::mutex allocation_mutex;
-        std::atomic<size_t> active_allocations;
-        
-        // Default constructor
-        PoolInfo() : type(PoolType::SMALL_OBJECTS), numa_node(0), active_allocations(0) {}
-        
-        // Explicit move constructor since mutex is not moveable
-        PoolInfo(PoolInfo&& other) noexcept 
+        PoolType type{PoolType::SMALL_OBJECTS};
+        int numa_node{0};
+        Spinlock allocation_mutex;
+        std::atomic<size_t> active_allocations{0};
+
+        // Default constructor — members use in-class initializers (S3230)
+        PoolInfo() = default;
+
+        // Explicit move constructor since spinlock is not moveable
+        PoolInfo(PoolInfo&& other) noexcept
             : arena(std::move(other.arena))
             , type(other.type)
             , numa_node(other.numa_node)
             , allocation_mutex()
             , active_allocations(other.active_allocations.load()) {}
+            
+        ~PoolInfo() = default;
+        PoolInfo(const PoolInfo&) = delete;
+        PoolInfo& operator=(const PoolInfo&) = delete;
+        PoolInfo& operator=(PoolInfo&&) = delete;
     };
     
     std::vector<PoolInfo> pools_;
-    std::unordered_map<void*, size_t> allocation_map_;
-    std::mutex allocation_map_mutex_;
+    std::unordered_map<void*, AllocationMeta> allocation_map_;
+    Spinlock allocation_map_mutex_;
 
 #ifdef ENABLE_HARMONIC_ARENA
     std::unique_ptr<HarmonicArena> harmonic_arena_;
@@ -260,7 +303,7 @@ public:
 private:
     PoolType classify_allocation(size_t size) const;
     size_t select_optimal_pool(PoolType type, int numa_node = -1);
-    void update_allocation_map(void* ptr, size_t pool_index);
+    void update_allocation_map(void* ptr, size_t pool_index, size_t size);
 };
 
 /**
@@ -322,13 +365,7 @@ public:
     
     MemoryArena* get_arena() const { return arena_; }
     
-    bool operator==(const ArenaAllocator& other) const {
-        return arena_ == other.arena_;
-    }
-    
-    bool operator!=(const ArenaAllocator& other) const {
-        return !(*this == other);
-    }
+    bool operator==(const ArenaAllocator& other) const = default;
 };
 
 /**
@@ -401,7 +438,7 @@ namespace EigenIntegration {
         using value_type = Scalar;
         MemoryArena* arena_;
         
-        ArenaAlignedAllocator(MemoryArena* arena = nullptr) : arena_(arena) {}
+        explicit ArenaAlignedAllocator(MemoryArena* arena = nullptr) : arena_(arena) {}
         
         Scalar* allocate(size_t num_elements) {
             if (arena_) {
@@ -449,7 +486,7 @@ public:
 
 private:
     std::vector<AllocationProfile> allocation_history_;
-    mutable std::mutex history_mutex_;
+    mutable Spinlock history_mutex_;
     std::atomic<bool> profiling_enabled_;
 
 public:

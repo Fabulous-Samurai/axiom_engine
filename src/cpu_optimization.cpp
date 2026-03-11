@@ -9,7 +9,7 @@
 namespace AXIOM {
 
 void CPUOptimization::Initialize() {
-    std::cout << "🚀 CPU optimizations initialized" << std::endl;
+    std::cout << "CPU optimizations initialized" << std::endl;
 }
 
 std::string CPUOptimization::GetCPUInfo() {

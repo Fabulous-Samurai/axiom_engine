@@ -36,8 +36,8 @@ class AxiomQATestSuite:
     def find_axiom_executable(self):
         """Locate the AXIOM executable"""
         possible_paths = [
-            "ninja-build/axiom.exe",
             "build/axiom.exe",
+            "ninja-build/axiom.exe",
             "build/Debug/axiom.exe", 
             "build/Release/axiom.exe",
             "cmake-build-debug/axiom.exe",
@@ -255,10 +255,14 @@ class AxiomQATestSuite:
             start_time = time.time()
             
             # Send matrix operations
-            for i in range(10):  # Reduced for test efficiency
+            for _ in range(10):  # Reduced for test efficiency
                 matrix_cmd = "linear"  # Switch to linear mode first
-                result = subprocess.run([self.axiom_path, matrix_cmd], 
-                                      capture_output=True, text=True, timeout=5)
+                subprocess.run(
+                    [self.axiom_path, matrix_cmd],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
                 
             total_time = time.time() - start_time
             final_memory = process.memory_info().rss

@@ -1,7 +1,7 @@
 # AXIOM Engine v3.1.1
 
 [![Version](https://img.shields.io/badge/version-3.1.1-blue.svg)](https://github.com/Fabulous-Samurai/axiom_engine/releases)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 [![C++](https://img.shields.io/badge/C++-20-blue.svg)](https://isocpp.org/)
 
 AXIOM is a C++20-first mathematical engine with a hybrid FFI model.
@@ -136,28 +136,96 @@ The interactive subprocess protocol supports mode switching via `:mode <name>` a
 
 ## Benchmarking
 
-### Build and Run
+### C++ Engine Benchmark
 
 ```bash
 cmake --build build --config Release --target axiom_benchmark
 ./build/axiom_benchmark
 ```
 
-### What Is Measured
+Measures scalar parser throughput (`Evaluate("2+2")` loop), typed fast-path
+throughput (`EvaluateFast`), zero-copy vector transfer, and lock-free queue
+IPC cycle behaviour.  Outputs `benchmark_results.csv` and
+`benchmark_results.json`.
 
-- Scalar parser throughput (`Evaluate("2+2")` loop)
-- Typed fast-path throughput (`EvaluateFast`)
-- Zero-copy style vector transfer behavior
-- Lock-free queue IPC cycle behavior
+### Python Workspace Benchmark (offscreen, 1 M variables)
 
-### Generated Benchmark Artifacts
+```bash
+python tests/functional/performance/benchmark_1m_vars.py
+```
 
-- `benchmark_results.csv`
-- `benchmark_results.json`
+Headless benchmark for the virtual workspace store: bulk insert, O(1)
+lookup latency, ans-pool throughput, and dirty-flag flush performance at
+scales from 100 to 1 000 000 variables.  See the
+[Workspace Scalability Benchmark](#workspace-scalability-benchmark) section
+below for full results.
+
+## Workspace Scalability Benchmark
+
+AXIOM's virtual workspace store is backed by a CPython `dict` hash-map and a
+contiguous `list` ans-pool, so every core operation is O(1) regardless of the
+number of variables in memory.
+
+### Off-Screen 1 000 000-Variable Run (Python 3.12.12)
+
+Benchmark script: `tests/functional/performance/benchmark_1m_vars.py`  
+Platform: Windows, Python 3.12.12, no Qt / no GUI (fully headless)
+
+```
+python tests/functional/performance/benchmark_1m_vars.py
+```
+
+#### Scale ladder — insert throughput & lookup latency
+
+| Variables  | Insert (ms) | Lookup p99 (µs) | Throughput (vars/sec) |
+|------------|-------------|-----------------|----------------------|
+| 100        | < 0.1       | 1.700           | 2 538 070            |
+| 1 000      | 0.3         | 0.300           | 3 419 973            |
+| 10 000     | 4.0         | 0.800           | 2 506 014            |
+| 100 000    | 72.2        | 1.700           | 1 384 328            |
+| **1 000 000** | **1 087** | **2.200**       | **919 889**          |
+
+#### Scorecard — all 6 checks passed ✅
+
+| Check                      | Budget    | Measured    | Result |
+|----------------------------|-----------|-------------|--------|
+| 1 M inserts                | < 2 000 ms | 1 728 ms   | ✅ PASS |
+| Lookup p99                 | < 5 µs    | 2.5 µs      | ✅ PASS |
+| 8 000 ans# appends         | < 50 ms   | 8.3 ms      | ✅ PASS |
+| Dirty-flag flush p99       | < 100 µs  | 0.5 µs      | ✅ PASS |
+| `rowCount()` mean latency  | < 5 µs    | **184.9 ns**| ✅ PASS |
+| Snapshot covers 1 M+ keys  | ≥ 1 000 000 | 1 009 000 | ✅ PASS |
+
+Memory footprint at 1 000 000 variables: **61.1 MB** (traced).
+
+The benchmark is also collected by pytest:
+
+```bash
+pytest tests/functional/performance/benchmark_1m_vars.py -v
+# → 5 passed in ~2.0 s
+```
 
 ## Formal Verification (TLA+)
 
-AXIOM now includes an initial TLA+ model for IPC protocol checks.
+AXIOM includes TLA+ models for IPC protocol correctness and workspace
+scalability guarantees.
+
+### Workspace Scalability Model (new)
+
+- Spec   : `formal/tla/AxiomWorkspaceScalability.tla`
+- Config : `formal/tla/AxiomWorkspaceScalability.cfg`
+- Log    : `formal/tla/logs/AxiomWorkspaceScalability.log`
+
+TLC explored **2 187 distinct states** (depth 18) with:
+
+- 8 safety invariants verified (ViewConsistency, DirtyConsistency,
+  CleanFlushIdempotency, O1RowCount, …)
+- 1 liveness property verified: `[](dirty => <>(~dirty))` — every dirty
+  write is eventually reflected in the view under the WF drain-tick scheduler
+- O(1) structural guarantee: `RowCount() = len(dict) + len(list)` — proven
+  by construction; CPython guarantees O(1) for both `len()` calls
+
+### IPC Protocol Models
 
 - Spec location: `formal/tla/AxiomIpcProtocol.tla`
 - TLC config: `formal/tla/AxiomIpcProtocol.cfg`
@@ -165,7 +233,7 @@ AXIOM now includes an initial TLA+ model for IPC protocol checks.
 - TLC config: `formal/tla/AxiomDaemonQueueFairness.cfg`
 - Guide: `docs/formal/TLA_PLUS_VERIFICATION.md`
 
-Current model scope:
+Current IPC model scope:
 
 - Interactive protocol framing (`__END__`)
 - Mode switch sequencing before command execution
@@ -202,6 +270,7 @@ Important CMake options:
 - `AXIOM_AUTO_INSTALL_PYTHON_DEPS` (default `ON`)
 - `AXIOM_ENABLE_EMBEDDED_PYTHON_ENGINE` (default `OFF`)
 - `AXIOM_ENABLE_CXX20_MODULES` (default `OFF`)
+- `AXIOM_ENABLE_HARMONIC_ARENA` (default `OFF`)
 - `BUILD_GIGA_TESTS` (default `ON`)
 
 Behavior notes:
@@ -264,7 +333,11 @@ See [CHANGELOG.md](CHANGELOG.md) for release history and migration notes.
 - Test guide: [tests/README.md](tests/README.md)
 - Optional Python dependencies: [requirements-optional.txt](requirements-optional.txt)
 - TLA+ verification guide: [docs/formal/TLA_PLUS_VERIFICATION.md](docs/formal/TLA_PLUS_VERIFICATION.md)
+- Workspace scalability TLA+ spec: [formal/tla/AxiomWorkspaceScalability.tla](formal/tla/AxiomWorkspaceScalability.tla)
+- Other-device install guide: [docs/INSTALL_OTHER_DEVICES.md](docs/INSTALL_OTHER_DEVICES.md)
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+This project is licensed under the GPLv3 License. See [LICENSE](LICENSE) for details.
+This ensures that any modifications or enterprise usage must be open-sourced.
+

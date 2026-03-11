@@ -6,6 +6,7 @@
  */
 
 #include "arena_allocator.h"
+#include "cpu_optimization.h"
 #include <algorithm>
 #include <cstring>
 #include <cassert>
@@ -25,6 +26,43 @@
 
 namespace AXIOM {
 
+
+AXIOM_FORCE_INLINE bool is_power_of_two(size_t value) noexcept {
+    return value != 0 && (value & (value - 1)) == 0;
+}
+
+AXIOM_FORCE_INLINE std::byte* HarmonicArena::reserve_from_block(ArenaBlock* block,
+                                                                const size_t bytes) noexcept {
+    const size_t old_offset = block->offset.fetch_add(bytes, std::memory_order_relaxed);
+    if (old_offset <= block->capacity && bytes <= (block->capacity - old_offset)) {
+        return block->storage.get() + old_offset;
+    }
+    return nullptr;
+}
+
+AXIOM_FORCE_INLINE bool HarmonicArena::try_install_spare(ArenaBlock* expected_current,
+                                                         ArenaBlock* replacement) noexcept {
+    return current_block_.compare_exchange_strong(expected_current,
+                                                  replacement,
+                                                  std::memory_order_acq_rel,
+                                                  std::memory_order_acquire);
+}
+
+AXIOM_FORCE_INLINE bool HarmonicArena::should_prepare_spare() const noexcept {
+    if (spare_block_.load(std::memory_order_acquire) != nullptr) {
+        return false;
+    }
+
+    ArenaBlock* active = current_block_.load(std::memory_order_acquire);
+    if (active == nullptr) {
+        return false;
+    }
+
+    const size_t used = active->offset.load(std::memory_order_relaxed);
+    const size_t threshold = (active->capacity * SCRIBE_PREPARE_THRESHOLD_PERCENT) / 100;
+    return used >= threshold;
+}
+
 // ============================================================================
 // HarmonicArena Implementation
 // ============================================================================
@@ -32,14 +70,18 @@ namespace AXIOM {
 HarmonicArena::HarmonicArena(size_t block_size)
     : block_size_(std::max<size_t>(block_size, 1024 * 1024))
 {
-    ArenaBlock* first = new ArenaBlock(block_size_);
+    auto first_owner = std::make_unique<ArenaBlock>(block_size_);
+    ArenaBlock* first = first_owner.get();
     first->is_ready.store(true, std::memory_order_release);
 
-    ArenaBlock* spare = new ArenaBlock(block_size_);
+    auto spare_owner = std::make_unique<ArenaBlock>(block_size_);
+    ArenaBlock* spare = spare_owner.get();
     spare->is_ready.store(true, std::memory_order_release);
 
     current_block_.store(first, std::memory_order_release);
     spare_block_.store(spare, std::memory_order_release);
+    first_owner.release();
+    spare_owner.release();
 
     maintenance_thread_ = std::jthread([this](std::stop_token st) {
         maintenance_worker(st);
@@ -67,78 +109,75 @@ HarmonicArena::~HarmonicArena() {
     }
 
     for (ArenaBlock* block : unique) {
-        delete block;
+        std::default_delete<ArenaBlock>{}(block);
     }
 }
 
-void* HarmonicArena::allocate(size_t bytes) {
-    if (bytes == 0) {
+void* HarmonicArena::allocate(size_t bytes) noexcept {
+    if (bytes == 0) [[unlikely]] {
         return nullptr;
     }
 
     const size_t aligned = align_size(bytes, CACHE_LINE_SIZE);
-
-    for (;;) {
-        ArenaBlock* active = current_block_.load(std::memory_order_acquire);
-        if (!active) {
-            return nullptr;
-        }
-
-        const size_t old_offset = active->offset.fetch_add(aligned, std::memory_order_relaxed);
-        if (old_offset + aligned <= active->capacity) {
-            return active->storage.get() + old_offset;
-        }
-
-        // Block exhausted; switch active block and retry.
-        return switch_and_retry(aligned);
+    if (aligned > block_size_) [[unlikely]] {
+        return nullptr;
     }
+
+    ArenaBlock* active = current_block_.load(std::memory_order_acquire);
+    if (!active) [[unlikely]] {
+        return nullptr;
+    }
+
+    if (std::byte* ptr = reserve_from_block(active, aligned)) {
+        return ptr;
+    }
+
+    // Block exhausted; switch active block and retry.
+    return switch_and_retry(aligned);
 }
 
-void* HarmonicArena::switch_and_retry(size_t bytes) {
+std::byte* HarmonicArena::switch_and_retry(size_t bytes) noexcept {
     for (;;) {
         ArenaBlock* old = current_block_.load(std::memory_order_acquire);
-        if (!old) {
+        if (!old) [[unlikely]] {
             return nullptr;
         }
 
         ArenaBlock* next = spare_block_.exchange(nullptr, std::memory_order_acq_rel);
-        if (!next) {
-            std::this_thread::yield();
+        if (!next) [[unlikely]] {
+            AXIOM_YIELD_PROCESSOR;
             continue;
         }
 
+        if (bytes > next->capacity) [[unlikely]] {
+            recycle_spare_block(next);
+            return nullptr;
+        }
+
         while (!next->is_ready.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
+            AXIOM_YIELD_PROCESSOR;
         }
 
         next->offset.store(0, std::memory_order_release);
 
-        if (current_block_.compare_exchange_strong(old, next,
-                                                   std::memory_order_acq_rel,
-                                                   std::memory_order_acquire)) {
+        if (try_install_spare(old, next)) {
             old->is_ready.store(false, std::memory_order_release);
             old->offset.store(0, std::memory_order_release);
             push_pool(old);
 
-            const size_t old_offset = next->offset.fetch_add(bytes, std::memory_order_relaxed);
-            if (old_offset + bytes <= next->capacity) {
-                return next->storage.get() + old_offset;
+            if (std::byte* ptr = reserve_from_block(next, bytes)) {
+                return ptr;
             }
             // Extremely large request; rotate again.
             continue;
         }
 
         // Another thread switched first; restore/recycle next block.
-        ArenaBlock* expected_null = nullptr;
-        if (!spare_block_.compare_exchange_strong(expected_null, next,
-                                                  std::memory_order_release,
-                                                  std::memory_order_relaxed)) {
-            push_pool(next);
-        }
+        recycle_spare_block(next);
     }
 }
 
-void HarmonicArena::push_pool(ArenaBlock* block) {
+void HarmonicArena::push_pool(ArenaBlock* block) noexcept {
     if (!block) {
         return;
     }
@@ -150,7 +189,20 @@ void HarmonicArena::push_pool(ArenaBlock* block) {
                                                 std::memory_order_relaxed));
 }
 
-HarmonicArena::ArenaBlock* HarmonicArena::pop_pool() {
+void HarmonicArena::recycle_spare_block(ArenaBlock* block) noexcept {
+    if (!block) {
+        return;
+    }
+
+    ArenaBlock* expected_null = nullptr;
+    if (!spare_block_.compare_exchange_strong(expected_null, block,
+                                              std::memory_order_release,
+                                              std::memory_order_relaxed)) {
+        push_pool(block);
+    }
+}
+
+HarmonicArena::ArenaBlock* HarmonicArena::pop_pool() noexcept {
     ArenaBlock* head = pool_head_.load(std::memory_order_acquire);
     while (head) {
         ArenaBlock* next = head->next_in_pool.load(std::memory_order_relaxed);
@@ -164,10 +216,13 @@ HarmonicArena::ArenaBlock* HarmonicArena::pop_pool() {
     return nullptr;
 }
 
-void HarmonicArena::maintenance_worker(std::stop_token stop_token) {
+void HarmonicArena::maintenance_worker(std::stop_token stop_token) noexcept {
     while (!stop_token.stop_requested()) {
-        // Prepare a spare block only when spare slot is empty.
-        if (spare_block_.load(std::memory_order_acquire) == nullptr) {
+        const bool prepare_now = should_prepare_spare();
+        bool did_work = false;
+
+        // Prepare spare eagerly near exhaustion to avoid allocator stall.
+        if (prepare_now || spare_block_.load(std::memory_order_acquire) == nullptr) {
             ArenaBlock* to_clean = pop_pool();
             if (to_clean) {
                 std::memset(to_clean->storage.get(), 0, to_clean->capacity);
@@ -180,10 +235,15 @@ void HarmonicArena::maintenance_worker(std::stop_token stop_token) {
                                                           std::memory_order_relaxed)) {
                     push_pool(to_clean);
                 }
+                did_work = true;
             }
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (did_work) {
+            std::this_thread::yield();
+        } else {
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
     }
 }
 
@@ -193,17 +253,7 @@ void HarmonicArena::maintenance_worker(std::stop_token stop_token) {
 
 MemoryArena::MemoryArena(size_t size, bool use_mmap)
     : arena_size_(size)
-    , current_offset_(0)
-    , peak_usage_(0)
-    , allocation_count_(0)
-    , free_count_(0)
-    , free_list_head_(nullptr)
     , use_memory_mapping_(use_mmap)
-#ifdef _WIN32
-    , file_mapping_(nullptr)
-#else
-    , backing_fd_(-1)
-#endif
 {
     if (use_memory_mapping_) {
         if (!setup_memory_mapping(size)) {
@@ -236,7 +286,11 @@ MemoryArena::~MemoryArena() {
     if (use_memory_mapping_) {
         cleanup_memory_mapping();
     } else {
+#ifdef _WIN32
+        _aligned_free(memory_base_);
+#else
         std::free(memory_base_);
+#endif
     }
 }
 
@@ -244,13 +298,20 @@ void* MemoryArena::allocate(size_t size, size_t alignment) {
     if (size == 0) {
         return nullptr;
     }
+
+    if (!is_power_of_two(alignment)) {
+        alignment = CACHE_LINE_SIZE;
+    }
     
     size_t aligned_size = align_size(size, alignment);
+    if (aligned_size > arena_size_) {
+        throw std::bad_alloc();
+    }
     allocation_count_.fetch_add(1, std::memory_order_relaxed);
     
     // Try free list first for better memory reuse
     {
-        std::lock_guard<std::mutex> lock(free_list_mutex_);
+        std::scoped_lock lock(free_list_mutex_);
         FreeBlock** current = &free_list_head_;
         
         while (*current) {
@@ -261,7 +322,7 @@ void* MemoryArena::allocate(size_t size, size_t alignment) {
                 // Split block if it's significantly larger
                 if (block->size > aligned_size + sizeof(FreeBlock) + 64) {
                     FreeBlock* new_block = reinterpret_cast<FreeBlock*>(
-                        reinterpret_cast<char*>(block) + aligned_size);
+                        reinterpret_cast<std::byte*>(block) + aligned_size);
                     new_block->size = block->size - aligned_size;
                     new_block->next = *current;
                     *current = new_block;
@@ -276,12 +337,12 @@ void* MemoryArena::allocate(size_t size, size_t alignment) {
     // Allocate from main arena
     size_t current_pos = current_offset_.fetch_add(aligned_size, std::memory_order_acq_rel);
     
-    if (current_pos + aligned_size > arena_size_) {
+    if (current_pos > arena_size_ - aligned_size) {
         current_offset_.fetch_sub(aligned_size, std::memory_order_acq_rel);
         throw std::bad_alloc();
     }
     
-    void* ptr = static_cast<char*>(memory_base_) + current_pos;
+    void* ptr = static_cast<std::byte*>(memory_base_) + current_pos;
     
     // Update peak usage
     size_t new_usage = current_pos + aligned_size;
@@ -308,7 +369,7 @@ void MemoryArena::deallocate(void* ptr, size_t size) {
     block->size = aligned_size;
     
     {
-        std::lock_guard<std::mutex> lock(free_list_mutex_);
+        std::scoped_lock lock(free_list_mutex_);
         block->next = free_list_head_;
         free_list_head_ = block;
     }
@@ -392,7 +453,7 @@ void MemoryArena::reset() {
     current_offset_.store(0, std::memory_order_release);
     
     {
-        std::lock_guard<std::mutex> lock(free_list_mutex_);
+        std::scoped_lock lock(free_list_mutex_);
         free_list_head_ = nullptr;
     }
     
@@ -400,7 +461,7 @@ void MemoryArena::reset() {
 }
 
 void MemoryArena::coalesce_free_blocks() {
-    std::lock_guard<std::mutex> lock(free_list_mutex_);
+    std::scoped_lock lock(free_list_mutex_);
     
     if (!free_list_head_) {
         return;
@@ -414,15 +475,15 @@ void MemoryArena::coalesce_free_blocks() {
         current = current->next;
     }
     
-    std::sort(blocks.begin(), blocks.end());
+    std::ranges::sort(blocks);
     
     // Coalesce adjacent blocks
     size_t write_index = 0;
     for (size_t read_index = 0; read_index < blocks.size(); ++read_index) {
         if (write_index > 0) {
-            char* prev_end = reinterpret_cast<char*>(blocks[write_index - 1]) + 
+            std::byte* prev_end = reinterpret_cast<std::byte*>(blocks[write_index - 1]) + 
                            blocks[write_index - 1]->size;
-            char* current_start = reinterpret_cast<char*>(blocks[read_index]);
+            std::byte* current_start = reinterpret_cast<std::byte*>(blocks[read_index]);
             
             if (prev_end == current_start) {
                 // Coalesce with previous block
@@ -447,11 +508,11 @@ size_t MemoryArena::align_size(size_t size, size_t alignment) const {
 }
 
 bool MemoryArena::is_pointer_in_arena(void* ptr) const {
-    char* char_ptr = static_cast<char*>(ptr);
-    char* arena_start = static_cast<char*>(memory_base_);
-    char* arena_end = arena_start + arena_size_;
+    std::byte* byte_ptr = static_cast<std::byte*>(ptr);
+    std::byte* arena_start = static_cast<std::byte*>(memory_base_);
+    std::byte* arena_end = arena_start + arena_size_;
     
-    return char_ptr >= arena_start && char_ptr < arena_end;
+    return byte_ptr >= arena_start && byte_ptr < arena_end;
 }
 
 MemoryArena::ArenaStats MemoryArena::get_stats() const {
@@ -467,7 +528,7 @@ MemoryArena::ArenaStats MemoryArena::get_stats() const {
     size_t free_block_count = 0;
     size_t free_block_total = 0;
     {
-        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(free_list_mutex_));
+        std::scoped_lock lock(free_list_mutex_);
         FreeBlock* block = free_list_head_;
         while (block) {
             free_block_count++;
@@ -476,8 +537,12 @@ MemoryArena::ArenaStats MemoryArena::get_stats() const {
         }
     }
     
-    stats.fragmentation_ratio = free_block_count > 0 ? 
-        static_cast<double>(free_block_count) / (stats.used_size / 1024.0) : 0.0;
+    if (free_block_count == 0 || stats.used_size == 0) {
+        stats.fragmentation_ratio = 0.0;
+    } else {
+        stats.fragmentation_ratio = static_cast<double>(free_block_count) /
+            (static_cast<double>(stats.used_size) / 1024.0);
+    }
     
     return stats;
 }
@@ -499,14 +564,15 @@ int MemoryArena::get_numa_node() const {
     }
     
     int mode;
-    unsigned long* node_mask = nullptr;
-    unsigned long max_nodes = numa_max_possible_node() + 1;
+    const unsigned long max_nodes = static_cast<unsigned long>(numa_max_possible_node() + 1);
+    const unsigned long bits_per_word = static_cast<unsigned long>(sizeof(unsigned long) * 8);
+    std::vector<unsigned long> node_mask((max_nodes + bits_per_word - 1) / bits_per_word, 0UL);
     
-    if (get_mempolicy(&mode, node_mask, max_nodes, memory_base_, MPOL_F_ADDR) == 0) {
+    if (get_mempolicy(&mode, node_mask.data(), max_nodes, memory_base_, MPOL_F_ADDR) == 0) {
         // Find first set bit
         for (int i = 0; i < static_cast<int>(max_nodes); ++i) {
-            if (node_mask && (node_mask[i / (sizeof(unsigned long) * 8)] & 
-                             (1UL << (i % (sizeof(unsigned long) * 8))))) {
+            if (node_mask[static_cast<size_t>(i) / bits_per_word] &
+                (1UL << (static_cast<unsigned long>(i) % bits_per_word))) {
                 return i;
             }
         }
@@ -547,8 +613,8 @@ void* PoolManager::allocate(size_t size, size_t alignment) {
     }
 #endif
 
-    PoolType pool_type = classify_allocation(size);
-    size_t pool_index = select_optimal_pool(pool_type);
+    auto pool_type = classify_allocation(size);
+    auto pool_index = select_optimal_pool(pool_type);
     
     if (pool_index >= pools_.size()) {
         throw std::bad_alloc();
@@ -557,12 +623,12 @@ void* PoolManager::allocate(size_t size, size_t alignment) {
     PoolInfo& pool = pools_[pool_index];
     
     {
-        std::lock_guard<std::mutex> lock(pool.allocation_mutex);
+        std::scoped_lock lock(pool.allocation_mutex);
         void* ptr = pool.arena->allocate(size, alignment);
         
         if (ptr) {
             pool.active_allocations.fetch_add(1, std::memory_order_relaxed);
-            update_allocation_map(ptr, pool_index);
+            update_allocation_map(ptr, pool_index, size);
             return ptr;
         }
     }
@@ -575,21 +641,22 @@ void PoolManager::deallocate(void* ptr) {
         return;
     }
     
-    size_t pool_index;
+    AllocationMeta meta{SIZE_MAX, 0};
     {
-        std::lock_guard<std::mutex> lock(allocation_map_mutex_);
+        std::scoped_lock lock(allocation_map_mutex_);
         auto it = allocation_map_.find(ptr);
         if (it == allocation_map_.end()) {
             return; // Not allocated by this pool manager
         }
-        pool_index = it->second;
+        meta = it->second;
         allocation_map_.erase(it);
     }
     
-    if (pool_index < pools_.size()) {
-        PoolInfo& pool = pools_[pool_index];
-        // Note: We don't know the original size, so we can't call deallocate
-        // In a production system, we'd store size information
+    if (meta.pool_index < pools_.size()) {
+        PoolInfo& pool = pools_[meta.pool_index];
+        // Deallocation path is thread-safe in MemoryArena (atomics + internal free-list lock),
+        // so avoid taking pool-level allocation mutex to reduce contention.
+        pool.arena->deallocate(ptr, meta.size);
         pool.active_allocations.fetch_sub(1, std::memory_order_relaxed);
     }
 }
@@ -612,14 +679,15 @@ size_t PoolManager::add_pool(PoolType type, size_t arena_size, int numa_node) {
 }
 
 PoolManager::PoolType PoolManager::classify_allocation(size_t size) const {
+    using enum PoolType;
     if (size <= 1024) {
-        return PoolType::SMALL_OBJECTS;
+        return SMALL_OBJECTS;
     } else if (size <= 64 * 1024) {
-        return PoolType::MEDIUM_OBJECTS;
+        return MEDIUM_OBJECTS;
     } else if (size <= 16 * 1024 * 1024) {
-        return PoolType::LARGE_OBJECTS;
+        return LARGE_OBJECTS;
     } else {
-        return PoolType::HUGE_OBJECTS;
+        return HUGE_OBJECTS;
     }
 }
 
@@ -652,9 +720,9 @@ size_t PoolManager::select_optimal_pool(PoolType type, int numa_node) {
     return SIZE_MAX;
 }
 
-void PoolManager::update_allocation_map(void* ptr, size_t pool_index) {
-    std::lock_guard<std::mutex> lock(allocation_map_mutex_);
-    allocation_map_[ptr] = pool_index;
+void PoolManager::update_allocation_map(void* ptr, size_t pool_index, size_t size) {
+    std::scoped_lock lock(allocation_map_mutex_);
+    allocation_map_[ptr] = AllocationMeta{pool_index, size};
 }
 
 std::vector<MemoryArena::ArenaStats> PoolManager::get_all_stats() const {
@@ -701,7 +769,7 @@ void MemoryProfiler::record_allocation(void* ptr, size_t size, size_t alignment,
     profile.timestamp = std::chrono::high_resolution_clock::now();
     
     {
-        std::lock_guard<std::mutex> lock(history_mutex_);
+        std::scoped_lock lock(history_mutex_);
         allocation_history_.push_back(profile);
         
         // Limit history size
@@ -713,7 +781,7 @@ void MemoryProfiler::record_allocation(void* ptr, size_t size, size_t alignment,
 }
 
 MemoryProfiler::PerformanceMetrics MemoryProfiler::get_metrics() const {
-    std::lock_guard<std::mutex> lock(history_mutex_);
+    std::scoped_lock lock(history_mutex_);
     
     PerformanceMetrics metrics{};
     

@@ -84,12 +84,21 @@ public:
     }
 };
 
+enum class NodeType {
+    Number,
+    Variable,
+    BinaryOp,
+    UnaryOp,
+    MultiArgFunction
+};
+
 struct ExprNode;
 using NodePtr = ExprNode *;
 
 struct ExprNode
 {
     virtual ~ExprNode() = default;
+    virtual NodeType GetType() const = 0;
 
     virtual double Evaluate(const std::map<std::string, double> &vars) const = 0;
 
@@ -101,6 +110,7 @@ struct NumberNode : ExprNode
     double value;
 
     NumberNode(double val) : value(val) {}
+    NodeType GetType() const override { return NodeType::Number; }
     double Evaluate(const std::map<std::string, double> &) const override { return value; }
 
     NodePtr Derivative(Arena &arena, std::string_view var) const override
@@ -114,6 +124,7 @@ struct VariableNode : ExprNode
     std::string_view name;
 
     VariableNode(std::string_view varName) : name(varName) {}
+    NodeType GetType() const override { return NodeType::Variable; }
 
     double Evaluate(const std::map<std::string, double> &vars) const override
     {
@@ -135,6 +146,7 @@ struct BinaryOpNode : ExprNode
     NodePtr left;
     NodePtr right;
     BinaryOpNode(char c, NodePtr l, NodePtr r) : op(c), left(l), right(r) {}
+    NodeType GetType() const override { return NodeType::BinaryOp; }
 
     double Evaluate(const std::map<std::string, double> &vars) const override
     {

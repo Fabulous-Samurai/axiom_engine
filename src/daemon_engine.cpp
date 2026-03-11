@@ -12,6 +12,7 @@
 #include "../include/dynamic_calc.h"
 
 #include <iostream>
+#include <format>
 #include <sstream>
 #include <stdexcept>
 #include <cstring>
@@ -20,11 +21,19 @@
 #include <type_traits>
 #include <variant>
 
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 namespace AXIOM {
 
 namespace {
 
-uint32_t read_env_u32(const char* name, uint32_t fallback)
+#include "cpu_optimization.h"
+
+[[nodiscard]] uint32_t read_env_u32(const char* name, uint32_t fallback) noexcept
 {
     const char* raw = std::getenv(name);
     if (raw == nullptr || *raw == '\0')
@@ -42,7 +51,7 @@ uint32_t read_env_u32(const char* name, uint32_t fallback)
     return static_cast<uint32_t>(parsed);
 }
 
-int64_t read_env_i64(const char* name, int64_t fallback)
+[[nodiscard]] int64_t read_env_i64(const char* name, int64_t fallback) noexcept
 {
     const char* raw = std::getenv(name);
     if (raw == nullptr || *raw == '\0')
@@ -60,35 +69,76 @@ int64_t read_env_i64(const char* name, int64_t fallback)
     return static_cast<int64_t>(parsed);
 }
 
-uint32_t circuit_failure_threshold()
+[[nodiscard]] uint32_t circuit_failure_threshold() noexcept
 {
     static const uint32_t value =
         read_env_u32("AXIOM_DAEMON_CIRCUIT_FAILURE_THRESHOLD", 5U);
     return value;
 }
 
-int64_t circuit_open_duration_ms()
+[[nodiscard]] int64_t circuit_open_duration_ms() noexcept
 {
     static const int64_t value =
         read_env_i64("AXIOM_DAEMON_CIRCUIT_OPEN_MS", 2000LL);
     return value;
 }
 
-int64_t backpressure_wait_ms()
+[[nodiscard]] int64_t backpressure_wait_ms() noexcept
 {
     static const int64_t value =
         read_env_i64("AXIOM_DAEMON_BACKPRESSURE_WAIT_MS", 5LL);
     return value;
 }
 
-int64_t now_ms()
+[[nodiscard]] int64_t now_ms() noexcept
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
 
-const char* calc_error_to_string(CalcErr err)
+AXIOM_FORCE_INLINE void apply_mode_from_request(DynamicCalc& calc, const std::string& mode)
+{
+    if (mode == "linear" || mode == "linear_system")
+    {
+        calc.SetMode(CalculationMode::LINEAR_SYSTEM);
+        return;
+    }
+    if (mode == "stats" || mode == "statistics")
+    {
+        calc.SetMode(CalculationMode::STATISTICS);
+        return;
+    }
+    if (mode == "symbolic")
+    {
+        calc.SetMode(CalculationMode::SYMBOLIC);
+        return;
+    }
+    calc.SetMode(CalculationMode::ALGEBRAIC);
+}
+
+template<typename Queue>
+AXIOM_FORCE_INLINE bool enqueue_until_deadline(Queue& queue,
+                                               const DaemonEngine::Request& request,
+                                               const std::chrono::steady_clock::time_point deadline,
+                                               const std::atomic<bool>& running) noexcept
+{
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        if (queue.push(request))
+        {
+            return true;
+        }
+        if (!running.load(std::memory_order_acquire)) [[unlikely]]
+        {
+            return false;
+        }
+        AXIOM_YIELD_PROCESSOR;
+    }
+    return false;
+}
+
+[[nodiscard]] const char* calc_error_to_string(CalcErr err) noexcept
 {
     switch (err)
     {
@@ -108,7 +158,7 @@ const char* calc_error_to_string(CalcErr err)
     }
 }
 
-const char* linalg_error_to_string(LinAlgErr err)
+[[nodiscard]] const char* linalg_error_to_string(LinAlgErr err) noexcept
 {
     switch (err)
     {
@@ -121,7 +171,7 @@ const char* linalg_error_to_string(LinAlgErr err)
     }
 }
 
-std::string engine_error_to_string(const EngineErrorResult& err)
+[[nodiscard]] std::string engine_error_to_string(const EngineErrorResult& err)
 {
     return std::visit([](const auto& e) -> std::string {
         using T = std::decay_t<decltype(e)>;
@@ -141,13 +191,7 @@ std::string engine_error_to_string(const EngineErrorResult& err)
 
 DaemonEngine::DaemonEngine(const std::string& pipe_name)
     : pipe_name_(pipe_name)
-    , startup_time_(std::chrono::steady_clock::now())
 {
-#ifdef _WIN32
-    pipe_handle_ = INVALID_HANDLE_VALUE;
-#else
-    pipe_fd_ = -1;
-#endif
 }
 
 DaemonEngine::~DaemonEngine() noexcept
@@ -194,8 +238,8 @@ bool DaemonEngine::start()
     }
 
     status_.store(DaemonStatus::READY, std::memory_order_release);
-    daemon_thread_    = std::thread([this] { daemon_loop(); });
-    request_processor_ = std::thread([this] { request_processor_loop(); });
+    daemon_thread_    = std::jthread([this] { daemon_loop(); });
+    request_processor_ = std::jthread([this] { request_processor_loop(); });
     return true;
 }
 
@@ -227,7 +271,7 @@ void DaemonEngine::stop() noexcept
         std::scoped_lock lock(sessions_mutex_);
         sessions_.clear();
     }
-    catch (...)
+    catch (const std::exception&)
     {
         // Keep noexcept contract: errors during teardown are intentionally ignored.
     }
@@ -240,7 +284,7 @@ void DaemonEngine::stop() noexcept
 DaemonEngine::PipeError DaemonEngine::setup_pipe()
 {
 #ifdef _WIN32
-    std::string full_name = "\\\\.\\pipe\\" + pipe_name_;
+    std::string full_name = std::format("\\\\.\\pipe\\{}", pipe_name_);
     pipe_handle_ = CreateNamedPipeA(
         full_name.c_str(),
         PIPE_ACCESS_DUPLEX,
@@ -260,7 +304,7 @@ DaemonEngine::PipeError DaemonEngine::setup_pipe()
     }
     return PipeError::None;
 #else
-    std::string path = "/tmp/" + pipe_name_;
+    std::string path = std::format("/tmp/{}", pipe_name_);
     // Remove stale FIFO
     ::unlink(path.c_str());
     if (::mkfifo(path.c_str(), 0600) != 0)
@@ -288,12 +332,12 @@ void DaemonEngine::cleanup_pipe()
         ::close(pipe_fd_);
         pipe_fd_ = -1;
     }
-    std::string path = "/tmp/" + pipe_name_;
+    std::string path = std::format("/tmp/{}", pipe_name_);
     ::unlink(path.c_str());
 #endif
 }
 
-const char* DaemonEngine::pipe_error_to_string(PipeError error)
+const char* DaemonEngine::pipe_error_to_string(PipeError error) noexcept
 {
     switch (error) {
         case PipeError::None:                    return "None";
@@ -324,6 +368,50 @@ static std::string json_get(const std::string& json, const std::string& key)
     return json.substr(pos, end - pos);
 }
 
+static std::string json_escape(const std::string& in)
+{
+    std::string out;
+    out.reserve(in.size() + 8);
+    for (const char ch : in)
+    {
+        switch (ch)
+        {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default: out.push_back(ch); break;
+        }
+    }
+    return out;
+}
+
+AXIOM_FORCE_INLINE bool decode_request(const std::string& req_str,
+                                       std::atomic<uint64_t>& next_request_id,
+                                       DaemonEngine::Request& out) noexcept
+{
+    out.command = json_get(req_str, "command");
+    out.session_id = json_get(req_str, "session");
+    out.mode = json_get(req_str, "mode");
+    if (out.command.empty()) [[unlikely]]
+    {
+        return false;
+    }
+    out.request_id = next_request_id.fetch_add(1, std::memory_order_relaxed);
+    out.timestamp = std::chrono::steady_clock::now();
+    return true;
+}
+
+static std::string build_response_json(const DaemonEngine::Response& resp)
+{
+    return std::format(R"({{"success":{},"result":"{}","error":"{}","time":{}}})",
+                       resp.success ? "true" : "false",
+                       json_escape(resp.result),
+                       json_escape(resp.error),
+                       resp.execution_time_ms);
+}
+
 // ---------------------------------------------------------------------------
 // IPC loops
 // ---------------------------------------------------------------------------
@@ -335,92 +423,15 @@ void DaemonEngine::daemon_loop()
         try
         {
 #ifdef _WIN32
-            bool connected = ConnectNamedPipe(pipe_handle_, nullptr)
-                             ? true
-                             : (GetLastError() == ERROR_PIPE_CONNECTED);
-            if (connected)
-            {
-                char buffer[4096];
-                DWORD bytes_read = 0;
-
-                if (ReadFile(pipe_handle_, buffer, sizeof(buffer) - 1, &bytes_read, nullptr))
-                {
-                    buffer[bytes_read] = '\0';
-                    std::string req_str(buffer);
-
-                    Request request;
-                    request.command    = json_get(req_str, "command");
-                    request.session_id = json_get(req_str, "session");
-                    request.mode       = json_get(req_str, "mode");
-
-                    if (!request.command.empty())
-                    {
-                        request.request_id = next_request_id_.fetch_add(1, std::memory_order_relaxed);
-                        request.timestamp  = std::chrono::steady_clock::now();
-
-                        // Process synchronously so we can write the response
-                        // before the pipe connection is closed.
-                        auto resp = execute_command(request);
-
-                        std::string resp_json =
-                            "{\"success\":" + std::string(resp.success ? "true" : "false") +
-                            ",\"result\":\"" + resp.result + "\"" +
-                            ",\"error\":\"" + resp.error + "\"" +
-                            ",\"time\":" + std::to_string(resp.execution_time_ms) + "}";
-
-                        DWORD written = 0;
-                        WriteFile(pipe_handle_,
-                                  resp_json.c_str(),
-                                  static_cast<DWORD>(resp_json.size()),
-                                  &written,
-                                  nullptr);
-                    }
-                }
-                DisconnectNamedPipe(pipe_handle_);
-            }
+            process_windows_pipe();
 #else
-            char buffer[4096];
-            ssize_t bytes_read = ::read(pipe_fd_, buffer, sizeof(buffer) - 1);
-
-            if (bytes_read > 0)
-            {
-                buffer[bytes_read] = '\0';
-                std::string req_str(buffer);
-
-                Request request;
-                request.command    = json_get(req_str, "command");
-                request.session_id = json_get(req_str, "session");
-                request.mode       = json_get(req_str, "mode");
-
-                if (!request.command.empty())
-                {
-                    request.request_id = next_request_id_.fetch_add(1, std::memory_order_relaxed);
-                    request.timestamp  = std::chrono::steady_clock::now();
-
-                    static constexpr auto kLoopBudget = std::chrono::milliseconds(2);
-                    const auto deadline = std::chrono::steady_clock::now() + kLoopBudget;
-                    bool enqueued = false;
-                    while (running_.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
-                    {
-                        if (request_queue_.push(request))
-                        {
-                            enqueued = true;
-                            break;
-                        }
-                        std::this_thread::yield();
-                    }
-
-                    if (!enqueued)
-                    {
-                        rejected_requests_.fetch_add(1, std::memory_order_relaxed);
-                    }
-                }
-            }
-            else
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
+            process_posix_pipe();
 #endif
+        }
+        catch (const std::runtime_error& e)
+        {
+            std::cerr << "[AXIOM Daemon] loop runtime error: " << e.what() << '\n';
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         catch (const std::exception& e)
         {
@@ -428,6 +439,78 @@ void DaemonEngine::daemon_loop()
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
+}
+
+void DaemonEngine::process_windows_pipe()
+{
+#ifdef _WIN32
+    bool connected = ConnectNamedPipe(pipe_handle_, nullptr)
+                     ? true
+                     : (GetLastError() == ERROR_PIPE_CONNECTED);
+    if (!connected)
+    {
+        return;
+    }
+
+    char buffer[4096];
+    DWORD bytes_read = 0;
+
+    if (!ReadFile(pipe_handle_, buffer, sizeof(buffer) - 1, &bytes_read, nullptr))
+    {
+        DisconnectNamedPipe(pipe_handle_);
+        return; // Wait for next connection
+    }
+
+    buffer[bytes_read] = '\0';
+    const std::string req_str(buffer);
+
+    Request request;
+    if (decode_request(req_str, next_request_id_, request))
+    {
+        const auto resp = execute_command(request);
+        const std::string resp_json = build_response_json(resp);
+
+        DWORD written = 0;
+        WriteFile(pipe_handle_,
+                  resp_json.c_str(),
+                  static_cast<DWORD>(resp_json.size()),
+                  &written,
+                  nullptr);
+    }
+    DisconnectNamedPipe(pipe_handle_);
+#endif
+}
+
+void DaemonEngine::process_posix_pipe()
+{
+#ifndef _WIN32
+    char buffer[4096];
+    ssize_t bytes_read = ::read(pipe_fd_, buffer, sizeof(buffer) - 1);
+
+    if (bytes_read <= 0)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        return;
+    }
+
+    buffer[bytes_read] = '\0';
+    const std::string req_str(buffer);
+
+    Request request;
+    if (decode_request(req_str, next_request_id_, request))
+    {
+        static constexpr auto kLoopBudget = std::chrono::milliseconds(2);
+        const auto deadline = std::chrono::steady_clock::now() + kLoopBudget;
+        if (!enqueue_until_deadline(request_queue_, request, deadline, running_))
+        {
+            rejected_requests_.fetch_add(1, std::memory_order_relaxed);
+        }
+        else
+        {
+            enqueued_requests_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+#endif
 }
 
 void DaemonEngine::request_processor_loop()
@@ -442,12 +525,26 @@ void DaemonEngine::request_processor_loop()
         }
 
         status_.store(DaemonStatus::BUSY, std::memory_order_release);
+        try
+        {
+            auto resp = execute_command(request);
+            (void)resp; // async path: responses for send_command() callers are not piped back
+            completed_requests_.fetch_add(1, std::memory_order_relaxed);
+        }
+        catch (const std::runtime_error& e)
+        {
+            rejected_requests_.fetch_add(1, std::memory_order_relaxed);
+            std::cerr << "[AXIOM Daemon] processor runtime error: " << e.what() << '\n';
+        }
+        catch (const std::exception& e)
+        {
+            rejected_requests_.fetch_add(1, std::memory_order_relaxed);
+            std::cerr << "[AXIOM Daemon] processor exception: " << e.what() << '\n';
+        }
 
-        auto resp = execute_command(request);
-        (void)resp; // async path: responses for send_command() callers are not piped back
-
-        status_.store(DaemonStatus::READY, std::memory_order_release);
         total_requests_.fetch_add(1, std::memory_order_relaxed);
+        // Fairness contract mirror: each started request reaches terminal state and daemon goes idle/ready.
+        status_.store(DaemonStatus::READY, std::memory_order_release);
     }
 }
 
@@ -477,15 +574,7 @@ DaemonEngine::Response DaemonEngine::execute_command(const Request& req)
 
         thread_local DynamicCalc calc;
 
-        // Set calculation mode from request
-        if (req.mode == "linear" || req.mode == "linear_system")
-            calc.SetMode(CalculationMode::LINEAR_SYSTEM);
-        else if (req.mode == "stats" || req.mode == "statistics")
-            calc.SetMode(CalculationMode::STATISTICS);
-        else if (req.mode == "symbolic")
-            calc.SetMode(CalculationMode::SYMBOLIC);
-        else
-            calc.SetMode(CalculationMode::ALGEBRAIC);
+        apply_mode_from_request(calc, req.mode);
 
         auto engine_result = calc.Evaluate(req.command);
 
@@ -507,6 +596,11 @@ DaemonEngine::Response DaemonEngine::execute_command(const Request& req)
             auto d = engine_result.GetDouble();
             resp.result  = d ? std::to_string(*d) : "ok";
         }
+    }
+    catch (const std::runtime_error& e)
+    {
+        resp.success = false;
+        resp.error   = e.what();
     }
     catch (const std::exception& e)
     {
@@ -536,11 +630,11 @@ DaemonEngine::Response DaemonEngine::execute_command(const Request& req)
     return resp;
 }
 
-void DaemonEngine::update_metrics(double execution_time)
+void DaemonEngine::update_metrics(double execution_time) noexcept
 {
-    uint64_t n = total_requests_.load(std::memory_order_relaxed) + 1;
-    double current_avg = avg_response_time_.load(std::memory_order_relaxed);
-    double new_avg = current_avg + (execution_time - current_avg) / static_cast<double>(n);
+    const uint64_t n = total_requests_.load(std::memory_order_relaxed) + 1;
+    const double current_avg = avg_response_time_.load(std::memory_order_relaxed);
+    const double new_avg = current_avg + (execution_time - current_avg) / static_cast<double>(n);
     avg_response_time_.store(new_avg, std::memory_order_relaxed);
 }
 
@@ -557,16 +651,16 @@ bool DaemonEngine::send_command(const std::string& session_id,
                                 const std::string& command,
                                 const std::string& mode)
 {
-    if (!running_.load(std::memory_order_acquire)) return false;
+    if (!running_.load(std::memory_order_acquire)) [[unlikely]] return false;
 
     const auto open_until = circuit_open_until_ms_.load(std::memory_order_acquire);
-    if (open_until > now_ms())
+    if (open_until > now_ms()) [[unlikely]]
     {
         rejected_requests_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
 
-    Request req;
+    Request req{};
     req.session_id = session_id;
     req.command    = command;
     req.mode       = mode;
@@ -574,19 +668,13 @@ bool DaemonEngine::send_command(const std::string& session_id,
     req.timestamp  = std::chrono::steady_clock::now();
 
     // Apply bounded backpressure: fail fast if queue remains saturated.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(backpressure_wait_ms());
-    while (!request_queue_.push(req)) {
-        if (!running_.load(std::memory_order_acquire))
-        {
-            return false;
-        }
-        if (std::chrono::steady_clock::now() >= deadline)
-        {
-            rejected_requests_.fetch_add(1, std::memory_order_relaxed);
-            return false;
-        }
-        std::this_thread::yield();
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(backpressure_wait_ms());
+    if (!enqueue_until_deadline(request_queue_, req, deadline, running_)) [[unlikely]] {
+        rejected_requests_.fetch_add(1, std::memory_order_relaxed);
+        return false;
     }
+    enqueued_requests_.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
@@ -594,7 +682,7 @@ std::string DaemonEngine::create_session()
 {
     // Use a nanosecond timestamp for a unique-enough ID without external deps
     auto ns = std::chrono::steady_clock::now().time_since_epoch().count();
-    std::string id = "session_" + std::to_string(ns);
+    std::string id = std::format("session_{}", ns);
 
     auto ctx = std::make_unique<SessionContext>();
     ctx->session_id  = id;
@@ -620,9 +708,9 @@ std::vector<std::string> DaemonEngine::get_active_sessions()
     return ids;
 }
 
-std::chrono::milliseconds DaemonEngine::get_uptime() const
+std::chrono::milliseconds DaemonEngine::get_uptime() const noexcept
 {
-    auto now = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
     return std::chrono::duration_cast<std::chrono::milliseconds>(now - startup_time_);
 }
 

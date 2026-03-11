@@ -1,4 +1,4 @@
-# Install AXIOM on Other Devices
+﻿# Install AXIOM on Other Devices
 
 This guide provides reproducible setup for new machines.
 
@@ -65,11 +65,14 @@ cmake --build build --config Release
 ## Native tests
 
 ```bash
+
 # Windows
+
 build\run_tests.exe
 build\giga_test_suite.exe
 
 # Unix
+
 ./build/run_tests
 ./build/giga_test_suite
 ```
@@ -85,3 +88,4 @@ java -jar tools/tla/tla2tools.jar -cleanup -config formal/tla/AxiomDaemonQueueFa
 
 - If VS Code reports `PySide6` unresolved import, ensure the workspace interpreter is `${workspaceFolder}/.venv/bin/python.exe`.
 - On MinGW/UCRT python, `pip install PySide6` may fail; use the MSYS2 package route in script 2.
+

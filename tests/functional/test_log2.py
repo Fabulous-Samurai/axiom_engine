@@ -1,9 +1,22 @@
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent / "gui/python"))
+repo_root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(repo_root / "gui" / "python"))
 from gui_helpers import CppEngineInterface
 
-engine = CppEngineInterface("ninja-build/axiom.exe")
+
+def resolve_axiom_exe() -> str:
+	candidates = [
+		repo_root / "build" / "axiom.exe",
+		repo_root / "ninja-build" / "axiom.exe",
+	]
+	for candidate in candidates:
+		if candidate.exists():
+			return str(candidate)
+	raise FileNotFoundError("axiom.exe not found in build/ or ninja-build/")
+
+
+engine = CppEngineInterface(resolve_axiom_exe())
 
 print("Testing log2 function...")
 result = engine.execute_command("log2(8)")

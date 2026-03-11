@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cctype>
 
+namespace AXIOM {
+
 static std::string trim(const std::string& s) {
     size_t b = s.find_first_not_of(" \t\n\r");
     size_t e = s.find_last_not_of(" \t\n\r");
@@ -70,8 +72,14 @@ EngineResult StatisticsParser::ParseAndExecute(const std::string& input) {
                 return engine_->Correlation(ParseVector(xpart), ParseVector(ypart));
             }
         }
-        return {{},{CalcErr::ArgumentMismatch}};
+        EngineResult res;
+        res.error = EngineErrorResult{CalcErr::ArgumentMismatch};
+        return res;
     }
 
-    return {{},{CalcErr::OperationNotFound}};
+    EngineResult res;
+    res.error = EngineErrorResult{CalcErr::OperationNotFound};
+    return res;
 }
+
+} // namespace AXIOM

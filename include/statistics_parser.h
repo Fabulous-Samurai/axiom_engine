@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+namespace AXIOM {
+
 class StatisticsParser : public IParser {
 public:
     explicit StatisticsParser(StatisticsEngine* engine) : engine_(engine) {}
@@ -13,3 +15,5 @@ private:
     StatisticsEngine* engine_;
     static std::vector<double> ParseVector(const std::string& s);
 };
+
+} // namespace AXIOM

@@ -180,8 +180,8 @@ class Advanced3DVisualization:
             print(f"❌ 3D Vector field error: {str(e)}")
             return None, None
     
-    def animated_3d_surface(self, base_func="sin(sqrt(x**2 + y**2))", 
-                           time_modulation="cos(t)", duration=10):
+    def animated_3d_surface(self, base_func=DEFAULT_SURFACE_FUNC, 
+                           time_modulation=DEFAULT_PARAMETRIC_X, duration=10):
         """Create animated 3D surface"""
         try:
             # Generate mesh
@@ -416,7 +416,7 @@ class Advanced3DVisualization:
         func_frame.pack(fill=tk.X, padx=20, pady=10)
         
         ttk.Label(func_frame, text="Z = f(x,y):").pack(side=tk.LEFT, padx=5)
-        func_var = tk.StringVar(value="sin(sqrt(x**2 + y**2))")
+        func_var = tk.StringVar(value=DEFAULT_SURFACE_FUNC)
         func_entry = ttk.Entry(func_frame, textvariable=func_var, width=40)
         func_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
         
@@ -486,11 +486,11 @@ class Advanced3DVisualization:
         param_frame.pack(fill=tk.X, padx=20, pady=10)
         
         ttk.Label(param_frame, text="X(t):").grid(row=0, column=0, sticky='w', padx=5, pady=2)
-        x_param_var = tk.StringVar(value="cos(t)")
+        x_param_var = tk.StringVar(value=DEFAULT_PARAMETRIC_X)
         ttk.Entry(param_frame, textvariable=x_param_var, width=15).grid(row=0, column=1, padx=5, pady=2)
         
         ttk.Label(param_frame, text="Y(t):").grid(row=0, column=2, sticky='w', padx=5, pady=2)
-        y_param_var = tk.StringVar(value="sin(t)")
+        y_param_var = tk.StringVar(value=DEFAULT_PARAMETRIC_Y)
         ttk.Entry(param_frame, textvariable=y_param_var, width=15).grid(row=0, column=3, padx=5, pady=2)
         
         ttk.Label(param_frame, text="Z(t):").grid(row=1, column=0, sticky='w', padx=5, pady=2)
@@ -526,11 +526,11 @@ class Advanced3DVisualization:
         
         # Surface plot
         print("🏔️ Creating surface plot...")
-        self.surface_plot_3d("sin(sqrt(x**2 + y**2))", title="Ripple Function")
+        self.surface_plot_3d(DEFAULT_SURFACE_FUNC, title="Ripple Function")
         
         # Parametric plot
         print("📈 Creating parametric curve...")
-        self.parametric_3d_plot("cos(t)", "sin(t)", "t/3", (0, 6*np.pi), title="Helix")
+        self.parametric_3d_plot(DEFAULT_PARAMETRIC_X, DEFAULT_PARAMETRIC_Y, "t/3", (0, 6*np.pi), title="Helix")
         
         # Molecular visualization
         print("🧬 Creating molecular visualization...")

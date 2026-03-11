@@ -1,13 +1,29 @@
 import subprocess
+from pathlib import Path
+
+
+def resolve_axiom_exe() -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = [
+        repo_root / "build" / "axiom.exe",
+        repo_root / "ninja-build" / "axiom.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    raise FileNotFoundError("axiom.exe not found in build/ or ninja-build/")
 
 proc = subprocess.Popen(
-    ["ninja-build/axiom.exe", "--interactive"],
+    [resolve_axiom_exe(), "--interactive"],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
     text=True,
     bufsize=0
 )
+
+if proc.stdin is None or proc.stdout is None:
+    raise RuntimeError("Failed to open subprocess pipes for axiom CLI")
 
 test_cases = [
     ("log(100)", "should be 2"),

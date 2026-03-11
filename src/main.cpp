@@ -17,6 +17,10 @@
 #include <limits>
 #include <filesystem>
 #include <cstdlib>
+#include <stdexcept>
+#include <type_traits>
+#include <utility>
+#include <format>
 
 #include "dynamic_calc.h"
 #include "extended_types.h"
@@ -39,6 +43,17 @@ namespace {
 bool try_parse_mode(const std::string& raw_mode, AXIOM::CalculationMode& mode_out);
 bool is_mode_supported(AXIOM::CalculationMode mode);
 int launch_gui_interface(bool prefer_qt = false, bool standard_gui = false);
+int print_result(const EngineResult& result, AXIOM::CalculationMode mode);
+bool trim_in_place(std::string& text);
+
+template<typename Enum>
+constexpr auto enum_to_underlying(Enum value) noexcept {
+#if defined(__cpp_lib_to_underlying) && (__cpp_lib_to_underlying >= 202102L)
+    return std::to_underlying(value);
+#else
+    return static_cast<std::underlying_type_t<Enum>>(value);
+#endif
+}
 }
 
 
@@ -46,7 +61,7 @@ int launch_gui_interface(bool prefer_qt = false, bool standard_gui = false);
 void print_axiom_banner() {
     std::cout << "\n";
     std::cout << "+----------------------------------------------------------------------+\n";
-    std::cout << "|                     AXIOM Engine v3.0                               |\n";
+    std::cout << "|                     AXIOM Engine v3.1.1                               |\n";
     std::cout << "|               Enterprise Scientific Computing Platform               |\n";
     std::cout << "+----------------------------------------------------------------------+\n";
     std::cout << "|  * Ultra-High Performance C++ Engine                                |\n";
@@ -102,6 +117,155 @@ void print_help() {
     std::cout << "  axiom --daemon &                      # Start daemon in background\n\n";
 }
 
+namespace {
+bool normalize_interactive_input(std::string& input) {
+    if (input.empty()) {
+        return false;
+    }
+
+    if (input.rfind("axiom ", 0) == 0) {
+        input = input.substr(6);
+    }
+
+    return trim_in_place(input);
+}
+
+bool try_extract_mode_request(const std::string& input, std::string& requested_mode) {
+    if (input == "algebraic" || input == "linear" || input == "statistics" ||
+        input == "symbolic" || input == "units" || input == "plot") {
+        requested_mode = input;
+        return true;
+    }
+
+    if (input.rfind("mode ", 0) == 0) {
+        requested_mode = input.substr(5);
+        return true;
+    }
+
+    if (input.rfind(":mode ", 0) == 0) {
+        requested_mode = input.substr(6);
+        return true;
+    }
+
+    return false;
+}
+
+bool apply_mode_request(const std::string& raw_mode, AXIOM::CalculationMode& current_mode) {
+    std::string requested_mode = raw_mode;
+    if (!trim_in_place(requested_mode)) {
+        return false;
+    }
+
+    AXIOM::CalculationMode parsed_mode = AXIOM::CalculationMode::ALGEBRAIC;
+    if (!try_parse_mode(requested_mode, parsed_mode)) {
+        std::cout << "Unknown mode: " << requested_mode << "\n";
+        return true;
+    }
+    if (!is_mode_supported(parsed_mode)) {
+        std::cout << "Mode not enabled in this build: " << requested_mode << "\n";
+        return true;
+    }
+
+    current_mode = parsed_mode;
+    std::cout << "Switched to " << AXIOM::mode_to_string(current_mode) << " mode\n";
+    return true;
+}
+
+#ifdef ENABLE_DAEMON_MODE
+void print_daemon_status(const AXIOM::DaemonEngine& daemon) {
+    std::cout << "Status: " << enum_to_underlying(daemon.get_status()) << "\n";
+    std::cout << "Total requests: " << daemon.get_total_requests() << "\n";
+    std::cout << "Avg response time: " << daemon.get_avg_response_time() << "ms\n";
+    std::cout << "Uptime: " << daemon.get_uptime().count() << "ms\n";
+}
+
+void run_embedded_daemon_console() {
+    std::cout << "Starting daemon mode...\n";
+    auto daemon = std::make_unique<AXIOM::DaemonEngine>();
+    if (!daemon->start()) {
+        std::cout << "Error: Failed to start daemon.\n";
+        return;
+    }
+
+    std::cout << "Daemon started successfully. Type 'stop' to exit daemon mode.\n";
+    while (true) {
+        std::string daemon_input;
+        std::cout << "DAEMON> ";
+        if (!std::getline(std::cin, daemon_input)) {
+            daemon->stop();
+            return;
+        }
+
+        if (daemon_input == "stop" || daemon_input == "exit") {
+            daemon->stop();
+            std::cout << "Daemon stopped.\n";
+            return;
+        }
+        if (daemon_input == "status") {
+            print_daemon_status(*daemon);
+        }
+    }
+}
+#endif
+
+#ifdef ENABLE_ARENA_ALLOCATOR
+void print_memory_pool_stats() {
+    const auto stats = AXIOM::PoolManager::instance().get_all_stats();
+    std::cout << "Memory Pool Statistics:\n";
+    for (size_t i = 0; i < stats.size(); ++i) {
+        const auto& stat = stats[i];
+        std::cout << "  Pool " << i << ": " << stat.used_size << "/" << stat.total_size
+                  << " bytes (" << (100.0 * stat.used_size / stat.total_size) << "%)\n";
+    }
+}
+#endif
+
+void print_extended_result(const AXIOM::ExtendedEngineResult& result, AXIOM::CalculationMode current_mode) {
+    if (!result.success) {
+        std::cout << "Error: " << result.error_message << "\n";
+        return;
+    }
+
+    if (current_mode == AXIOM::CalculationMode::LINEAR_SYSTEM && result.has_linear_result) {
+        std::cout << "Linear System Solution:\n";
+        for (size_t i = 0; i < result.linear_result.solution.size(); ++i) {
+            std::cout << "  x" << i << " = " << result.linear_result.solution[i] << "\n";
+        }
+        return;
+    }
+    if (current_mode == AXIOM::CalculationMode::STATISTICS && result.has_stats_result) {
+        const auto& stats = result.stats_result;
+        std::cout << "Statistical Analysis:\n";
+        std::cout << "  Mean: " << stats.mean << "\n";
+        std::cout << "  Std Dev: " << stats.std_dev << "\n";
+        std::cout << "  Min: " << stats.min << "\n";
+        std::cout << "  Max: " << stats.max << "\n";
+        std::cout << "  Count: " << stats.count << "\n";
+        return;
+    }
+    if (current_mode == AXIOM::CalculationMode::SYMBOLIC && result.has_symbolic_result) {
+        std::cout << "Symbolic result: " << result.symbolic_result.result << "\n";
+        if (!result.symbolic_result.simplified.empty()) {
+            std::cout << "Simplified: " << result.symbolic_result.simplified << "\n";
+        }
+        return;
+    }
+    if (current_mode == AXIOM::CalculationMode::UNITS && result.has_unit_result) {
+        std::cout << "Converted: " << result.unit_result.value
+                  << " " << result.unit_result.target_unit << "\n";
+        return;
+    }
+    if (current_mode == AXIOM::CalculationMode::PLOT && result.has_plot_result) {
+        std::cout << "Plot generated: " << result.plot_result.filename << "\n";
+        std::cout << "Range: [" << result.plot_result.x_min << ", "
+                  << result.plot_result.x_max << "]\n";
+        return;
+    }
+
+    std::cout << result.value << "\n";
+}
+}
+
 int run_interactive_mode() {
     print_axiom_banner();
     
@@ -127,19 +291,7 @@ int run_interactive_mode() {
     while (true) {
         std::cout << "[" << AXIOM::mode_to_string(current_mode) << "] AXIOM> ";
         if (!std::getline(std::cin, input)) break; // EOF or stream error
-
-        if (input.empty()) continue;
-
-        // Support users accidentally typing shell-style prefixed commands inside REPL.
-        if (input.rfind("axiom ", 0) == 0) {
-            input = input.substr(6);
-            auto first = input.find_first_not_of(" \t\r\n");
-            if (first == std::string::npos) {
-                continue;
-            }
-            auto last = input.find_last_not_of(" \t\r\n");
-            input = input.substr(first, last - first + 1);
-        }
+        if (!normalize_interactive_input(input)) continue;
         
         if (input == "exit" || input == "quit") {
             break;
@@ -159,83 +311,22 @@ int run_interactive_mode() {
             continue;
         }
         
-        // Check for mode changes.
         std::string requested_mode;
-        if (input == "algebraic" || input == "linear" || input == "statistics" ||
-            input == "symbolic" || input == "units" || input == "plot") {
-            requested_mode = input;
-        } else if (input.rfind("mode ", 0) == 0) {
-            requested_mode = input.substr(5);
-        } else if (input.rfind(":mode ", 0) == 0) {
-            requested_mode = input.substr(6);
-        }
-
-        if (!requested_mode.empty()) {
-            auto first = requested_mode.find_first_not_of(" \t\r\n");
-            if (first != std::string::npos) {
-                auto last = requested_mode.find_last_not_of(" \t\r\n");
-                requested_mode = requested_mode.substr(first, last - first + 1);
-            }
-
-            AXIOM::CalculationMode parsed_mode = AXIOM::CalculationMode::ALGEBRAIC;
-            if (!try_parse_mode(requested_mode, parsed_mode)) {
-                std::cout << "Unknown mode: " << requested_mode << "\n";
-                continue;
-            }
-            if (!is_mode_supported(parsed_mode)) {
-                std::cout << "Mode not enabled in this build: " << requested_mode << "\n";
-                continue;
-            }
-
-            current_mode = parsed_mode;
-            std::cout << "Switched to " << AXIOM::mode_to_string(current_mode) << " mode\n";
+        if (try_extract_mode_request(input, requested_mode) &&
+            apply_mode_request(requested_mode, current_mode)) {
             continue;
         }
         
 #ifdef ENABLE_DAEMON_MODE
         if (input == "daemon") {
-            std::cout << "Starting daemon mode...\n";
-            auto daemon = std::make_unique<AXIOM::DaemonEngine>();
-            if (daemon->start()) {
-                std::cout << "Daemon started successfully. Type 'stop' to exit daemon mode.\n";
-                
-                // Keep daemon running until stop
-                while (true) {
-                    std::string daemon_input;
-                    std::cout << "DAEMON> ";
-                    if (!std::getline(std::cin, daemon_input)) {
-                        daemon->stop();
-                        break;
-                    }
-
-                    if (daemon_input == "stop" || daemon_input == "exit") {
-                        daemon->stop();
-                        std::cout << "Daemon stopped.\n";
-                        break;
-                    } else if (daemon_input == "status") {
-                        std::cout << "Status: " << static_cast<int>(daemon->get_status()) << "\n";
-                        std::cout << "Total requests: " << daemon->get_total_requests() << "\n";
-                        std::cout << "Avg response time: " << daemon->get_avg_response_time() << "ms\n";
-                        std::cout << "Uptime: " << daemon->get_uptime().count() << "ms\n";
-                    }
-                }
-                continue;
-            } else {
-                std::cout << "Error: Failed to start daemon.\n";
-                continue;
-            }
+            run_embedded_daemon_console();
+            continue;
         }
 #endif
         
 #ifdef ENABLE_ARENA_ALLOCATOR
         if (input == "memory") {
-            auto stats = AXIOM::PoolManager::instance().get_all_stats();
-            std::cout << "Memory Pool Statistics:\n";
-            for (size_t i = 0; i < stats.size(); ++i) {
-                const auto& stat = stats[i];
-                std::cout << "  Pool " << i << ": " << stat.used_size << "/" << stat.total_size 
-                         << " bytes (" << (100.0 * stat.used_size / stat.total_size) << "%)\n";
-            }
+            print_memory_pool_stats();
             continue;
         }
 #endif
@@ -245,39 +336,7 @@ int run_interactive_mode() {
             calc->SetMode(current_mode);
             auto basic_result = calc->Evaluate(input);
             auto result = AXIOM::ExtendedEngineResult::from_engine_result(basic_result);
-            
-            if (result.success) {
-                if (current_mode == AXIOM::CalculationMode::LINEAR_SYSTEM && result.has_linear_result) {
-                    std::cout << "Linear System Solution:\n";
-                    for (size_t i = 0; i < result.linear_result.solution.size(); ++i) {
-                        std::cout << "  x" << i << " = " << result.linear_result.solution[i] << "\n";
-                    }
-                } else if (current_mode == AXIOM::CalculationMode::STATISTICS && result.has_stats_result) {
-                    const auto& stats = result.stats_result;
-                    std::cout << "Statistical Analysis:\n";
-                    std::cout << "  Mean: " << stats.mean << "\n";
-                    std::cout << "  Std Dev: " << stats.std_dev << "\n";
-                    std::cout << "  Min: " << stats.min << "\n";
-                    std::cout << "  Max: " << stats.max << "\n";
-                    std::cout << "  Count: " << stats.count << "\n";
-                } else if (current_mode == AXIOM::CalculationMode::SYMBOLIC && result.has_symbolic_result) {
-                    std::cout << "Symbolic result: " << result.symbolic_result.result << "\n";
-                    if (!result.symbolic_result.simplified.empty()) {
-                        std::cout << "Simplified: " << result.symbolic_result.simplified << "\n";
-                    }
-                } else if (current_mode == AXIOM::CalculationMode::UNITS && result.has_unit_result) {
-                    std::cout << "Converted: " << result.unit_result.value 
-                             << " " << result.unit_result.target_unit << "\n";
-                } else if (current_mode == AXIOM::CalculationMode::PLOT && result.has_plot_result) {
-                    std::cout << "Plot generated: " << result.plot_result.filename << "\n";
-                    std::cout << "Range: [" << result.plot_result.x_min << ", " 
-                             << result.plot_result.x_max << "]\n";
-                } else {
-                    std::cout << result.value << "\n";
-                }
-            } else {
-                std::cout << "Error: " << result.error_message << "\n";
-            }
+            print_extended_result(result, current_mode);
         } catch (const std::runtime_error& e) {
             std::cout << "Runtime error: " << e.what() << "\n";
         } catch (const std::exception& e) {
@@ -367,7 +426,7 @@ int run_benchmark_mode() {
     start = std::chrono::high_resolution_clock::now();
     std::vector<void*> ptrs;
     for (int i = 0; i < 100000; ++i) {
-        ptrs.push_back(arena->allocate(64));
+        ptrs.emplace_back(arena->allocate(64));
     }
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
@@ -439,22 +498,25 @@ int run_launch_command(const std::string& command) {
 int launch_gui_interface(bool prefer_qt, bool standard_gui) {
     namespace fs = std::filesystem;
 
-    std::vector<std::string> gui_candidates;
-    if (standard_gui) {
-        gui_candidates.push_back("gui/qt/axiom_qt_standard_gui.py");
-        gui_candidates.push_back("gui/python/axiom_gui.py");
-    } else {
+    const auto get_gui_candidates = [prefer_qt, standard_gui]() {
+        std::vector<std::string> gui_candidates;
+        if (standard_gui) {
+            gui_candidates.emplace_back("gui/qt/axiom_qt_standard_gui.py");
+            gui_candidates.emplace_back("gui/python/axiom_gui.py");
+            return gui_candidates;
+        }
         if (prefer_qt) {
-            gui_candidates.push_back("gui/qt/axiom_qt_gui.py");
+            gui_candidates.emplace_back("gui/qt/axiom_qt_gui.py");
         }
-        gui_candidates.push_back("gui/python/axiom_pro_gui.py");
+        gui_candidates.emplace_back("gui/python/axiom_pro_gui.py");
         if (!prefer_qt) {
-            gui_candidates.push_back("gui/qt/axiom_qt_gui.py");
+            gui_candidates.emplace_back("gui/qt/axiom_qt_gui.py");
         }
-    }
+        return gui_candidates;
+    };
 
     std::string gui_script;
-    for (const auto& candidate : gui_candidates) {
+    for (const auto& candidate : get_gui_candidates()) {
         if (fs::exists(candidate)) {
             gui_script = candidate;
             break;
@@ -471,58 +533,48 @@ int launch_gui_interface(bool prefer_qt, bool standard_gui) {
     }
 
     std::vector<std::string> launch_commands;
+    auto add_script_command = [&launch_commands, &gui_script](const std::string& prefix) {
+        launch_commands.emplace_back(prefix + " \"" + gui_script + "\"");
+    };
+    auto add_python_if_exists = [&launch_commands, &gui_script](const fs::path& python_path) {
+        if (fs::exists(python_path)) {
+            launch_commands.emplace_back("\"" + python_path.string() + "\" \"" + gui_script + "\"");
+        }
+    };
 
     if (const char* venv_env = std::getenv("VIRTUAL_ENV")) {
         const fs::path venv_path(venv_env);
 #ifdef _WIN32
-        const fs::path venv_python_scripts = venv_path / "Scripts" / "python.exe";
-        const fs::path venv_python_bin = venv_path / "bin" / "python";
-        if (fs::exists(venv_python_scripts)) {
-            launch_commands.push_back("\"" + venv_python_scripts.string() + "\" \"" + gui_script + "\"");
-        }
-        if (fs::exists(venv_python_bin)) {
-            launch_commands.push_back("\"" + venv_python_bin.string() + "\" \"" + gui_script + "\"");
-        }
+        add_python_if_exists(venv_path / "Scripts" / "python.exe");
+        add_python_if_exists(venv_path / "bin" / "python");
 #else
-        const fs::path venv_python = venv_path / "bin" / "python";
-        if (fs::exists(venv_python)) {
-            launch_commands.push_back("\"" + venv_python.string() + "\" \"" + gui_script + "\"");
-        }
+        add_python_if_exists(venv_path / "bin" / "python");
 #endif
     }
 
 #ifdef _WIN32
-    const fs::path local_venv_scripts = fs::path(".venv") / "Scripts" / "python.exe";
-    const fs::path local_venv_bin = fs::path(".venv") / "bin" / "python";
-    if (fs::exists(local_venv_scripts)) {
-        launch_commands.push_back("\"" + local_venv_scripts.string() + "\" \"" + gui_script + "\"");
-    }
-    if (fs::exists(local_venv_bin)) {
-        launch_commands.push_back("\"" + local_venv_bin.string() + "\" \"" + gui_script + "\"");
-    }
+    add_python_if_exists(fs::path(".venv") / "Scripts" / "python.exe");
+    add_python_if_exists(fs::path(".venv") / "bin" / "python");
 
     // Support MSYS2/MinGW Python where Qt bindings are often installed via pacman.
     const fs::path msys2_mingw_python = fs::path("C:\\msys64\\mingw64\\bin\\python.exe");
     const fs::path msys2_ucrt_python = fs::path("C:\\msys64\\ucrt64\\bin\\python.exe");
     if (fs::exists(msys2_mingw_python)) {
-        launch_commands.push_back("\"" + msys2_mingw_python.string() + "\" \"" + gui_script + "\"");
-        launch_commands.push_back("set \"PATH=C:\\msys64\\mingw64\\bin;%PATH%\" && python \"" + gui_script + "\"");
+        add_python_if_exists(msys2_mingw_python);
+        add_script_command("set \"PATH=C:\\msys64\\mingw64\\bin;%PATH%\" && python");
     }
     if (fs::exists(msys2_ucrt_python)) {
-        launch_commands.push_back("\"" + msys2_ucrt_python.string() + "\" \"" + gui_script + "\"");
-        launch_commands.push_back("set \"PATH=C:\\msys64\\ucrt64\\bin;%PATH%\" && python \"" + gui_script + "\"");
+        add_python_if_exists(msys2_ucrt_python);
+        add_script_command("set \"PATH=C:\\msys64\\ucrt64\\bin;%PATH%\" && python");
     }
 
-    launch_commands.push_back("python \"" + gui_script + "\"");
-    launch_commands.push_back("python3 \"" + gui_script + "\"");
-    launch_commands.push_back("py -3 \"" + gui_script + "\"");
+    add_script_command("python");
+    add_script_command("python3");
+    add_script_command("py -3");
 #else
-    const fs::path local_venv = fs::path(".venv") / "bin" / "python";
-    if (fs::exists(local_venv)) {
-        launch_commands.push_back("\"" + local_venv.string() + "\" \"" + gui_script + "\"");
-    }
-    launch_commands.push_back("python3 \"" + gui_script + "\"");
-    launch_commands.push_back("python \"" + gui_script + "\"");
+    add_python_if_exists(fs::path(".venv") / "bin" / "python");
+    add_script_command("python3");
+    add_script_command("python");
 #endif
 
     std::cout << "Starting GUI mode...\n";
@@ -571,6 +623,119 @@ std::string format_error(const EngineErrorResult& err) {
     return "Unknown error";
 }
 
+bool trim_in_place(std::string& text) {
+    const auto first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return false;
+    }
+    const auto last = text.find_last_not_of(" \t\r\n");
+    text = text.substr(first, last - first + 1);
+    return true;
+}
+
+void emit_protocol_end() {
+    std::cout << "__END__\n" << std::flush;
+}
+
+int try_print_plot_from_string(const std::string& str_value, AXIOM::CalculationMode mode) {
+    if (mode != AXIOM::CalculationMode::PLOT ||
+        str_value.rfind("PLOT_FUNCTION:", 0) != 0) {
+        return -1;
+    }
+
+    const std::string payload = str_value.substr(std::string("PLOT_FUNCTION:").size());
+    std::vector<std::string> parts;
+    size_t start = 0;
+    for (size_t i = 0; i <= payload.size(); ++i) {
+        if (i == payload.size() || payload[i] == ',') {
+            std::string token = payload.substr(start, i - start);
+            if (trim_in_place(token)) {
+                parts.emplace_back(std::move(token));
+            } else {
+                parts.emplace_back("");
+            }
+            start = i + 1;
+        }
+    }
+
+    if (parts.size() != 5) {
+        return -1;
+    }
+
+    try {
+        PlotConfig cfg;
+        cfg.x_min = std::stod(parts[1]);
+        cfg.x_max = std::stod(parts[2]);
+        cfg.y_min = std::stod(parts[3]);
+        cfg.y_max = std::stod(parts[4]);
+        PlotEngine plot_engine;
+        std::cout << plot_engine.PlotFunction(parts[0], cfg);
+        return 0;
+    } catch (const std::invalid_argument&) {
+        std::cerr << "Error: Invalid plot configuration" << "\n";
+        return 1;
+    } catch (const std::out_of_range&) {
+        std::cerr << "Error: Invalid plot configuration" << "\n";
+        return 1;
+    }
+}
+
+int run_interactive_subprocess() {
+    auto calc = std::make_unique<AXIOM::DynamicCalc>();
+    AXIOM::CalculationMode current_mode = AXIOM::CalculationMode::ALGEBRAIC;
+
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (!trim_in_place(line)) {
+            continue;
+        }
+
+        if (line == "exit" || line == "quit") {
+            break;
+        }
+
+        if (line.rfind(":mode ", 0) == 0) {
+            std::string mode_str = line.substr(6);
+            if (!trim_in_place(mode_str)) {
+                std::cout << "Error: Missing mode name\n";
+                emit_protocol_end();
+                continue;
+            }
+
+            AXIOM::CalculationMode parsed_mode = AXIOM::CalculationMode::ALGEBRAIC;
+            if (!try_parse_mode(mode_str, parsed_mode)) {
+                std::cout << "Error: Unknown mode '" << mode_str << "'\n";
+                emit_protocol_end();
+                continue;
+            }
+            if (!is_mode_supported(parsed_mode)) {
+                std::cout << "Error: Mode '" << mode_str << "' is not enabled in this build\n";
+                emit_protocol_end();
+                continue;
+            }
+
+            current_mode = parsed_mode;
+            std::cout << "Mode changed to " << AXIOM::mode_to_string(current_mode) << "\n";
+            emit_protocol_end();
+            continue;
+        }
+
+        try {
+            calc->SetMode(current_mode);
+            const auto basic_result = calc->Evaluate(line);
+            print_result(basic_result, current_mode);
+            emit_protocol_end();
+        } catch (const std::runtime_error& e) {
+            std::cout << "Runtime error: " << e.what() << "\n";
+            emit_protocol_end();
+        } catch (const std::exception& e) {
+            std::cout << "Error: " << e.what() << "\n";
+            emit_protocol_end();
+        }
+    }
+    return 0;
+}
+
 int print_result(const EngineResult& result, AXIOM::CalculationMode mode) {
     if (!result.result.has_value()) {
         if (result.error.has_value()) {
@@ -583,133 +748,126 @@ int print_result(const EngineResult& result, AXIOM::CalculationMode mode) {
 
     const auto& value = result.result.value();
 
+    const auto print_vector_result = [mode](const Vector& vec) {
+        if (mode == AXIOM::CalculationMode::LINEAR_SYSTEM) {
+            for (size_t i = 0; i < vec.size(); ++i) {
+                std::cout << std::format("x{} = {:.15g}", i, vec[i]) << "\n";
+            }
+            return;
+        }
+        std::cout << "[";
+        for (size_t i = 0; i < vec.size(); ++i) {
+            std::cout << std::format("{:.15g}{}", vec[i], (i + 1 < vec.size()) ? ", " : "");
+        }
+        std::cout << "]\n";
+    };
+
+    const auto print_matrix_rows = [](const Matrix& mat) {
+        for (const auto& row : mat) {
+            std::cout << "[";
+            for (size_t i = 0; i < row.size(); ++i) {
+                std::cout << std::format("{:.15g}{}", row[i], (i + 1 < row.size()) ? ", " : "");
+            }
+            std::cout << "]\n";
+        }
+    };
+
+    const auto try_plot_matrix = [](const Matrix& mat) {
+        Vector x_data;
+        Vector y_data;
+        x_data.reserve(mat.size());
+        y_data.reserve(mat.size());
+
+        double x_min = std::numeric_limits<double>::infinity();
+        double x_max = -std::numeric_limits<double>::infinity();
+        double y_min = std::numeric_limits<double>::infinity();
+        double y_max = -std::numeric_limits<double>::infinity();
+
+        for (const auto& row : mat) {
+            if (row.size() < 2) {
+                continue;
+            }
+            const double x = row[0];
+            const double y = row[1];
+            x_data.emplace_back(x);
+            y_data.emplace_back(y);
+            x_min = std::min(x_min, x);
+            x_max = std::max(x_max, x);
+            y_min = std::min(y_min, y);
+            y_max = std::max(y_max, y);
+        }
+
+        if (x_data.empty()) {
+            return false;
+        }
+
+        PlotConfig cfg;
+        cfg.x_min = x_min;
+        cfg.x_max = x_max;
+        cfg.y_min = y_min;
+        cfg.y_max = y_max;
+
+        if (cfg.x_min == cfg.x_max) {
+            cfg.x_min -= 1.0;
+            cfg.x_max += 1.0;
+        }
+        if (cfg.y_min == cfg.y_max) {
+            cfg.y_min -= 1.0;
+            cfg.y_max += 1.0;
+        }
+
+        PlotEngine plot_engine;
+        std::cout << plot_engine.PlotData(x_data, y_data, cfg);
+        return true;
+    };
+
     if (std::holds_alternative<double>(value)) {
-        printf("%.15g\n", std::get<double>(value));
+        std::cout << std::setprecision(15) << std::get<double>(value) << "\n";
         return 0;
     }
 
     if (std::holds_alternative<std::complex<double>>(value)) {
         const auto& c = std::get<std::complex<double>>(value);
-        printf("%.15g%+.15gi\n", c.real(), c.imag());
+        std::cout << std::setprecision(15) << c.real();
+        if (c.imag() >= 0.0) {
+            std::cout << "+";
+        }
+        std::cout << std::setprecision(15) << c.imag() << "i\n";
         return 0;
     }
 
     if (std::holds_alternative<AXIOM::Number>(value)) {
         auto c = AXIOM::GetComplex(std::get<AXIOM::Number>(value));
-        printf("%.15g%+.15gi\n", c.real(), c.imag());
+        std::cout << std::setprecision(15) << c.real();
+        if (c.imag() >= 0.0) {
+            std::cout << "+";
+        }
+        std::cout << std::setprecision(15) << c.imag() << "i\n";
         return 0;
     }
 
     if (std::holds_alternative<Vector>(value)) {
         const auto& vec = std::get<Vector>(value);
-        if (mode == AXIOM::CalculationMode::LINEAR_SYSTEM) {
-            for (size_t i = 0; i < vec.size(); ++i) {
-                printf("x%zu = %.15g\n", i, vec[i]);
-            }
-        } else {
-            printf("[");
-            for (size_t i = 0; i < vec.size(); ++i) {
-                printf("%.15g%s", vec[i], (i + 1 < vec.size()) ? ", " : "");
-            }
-            printf("]\n");
-        }
+        print_vector_result(vec);
         return 0;
     }
 
     if (std::holds_alternative<Matrix>(value)) {
         const auto& mat = std::get<Matrix>(value);
 
-        if (mode == AXIOM::CalculationMode::PLOT) {
-            Vector x_data;
-            Vector y_data;
-            x_data.reserve(mat.size());
-            y_data.reserve(mat.size());
-
-            double x_min = std::numeric_limits<double>::infinity();
-            double x_max = -std::numeric_limits<double>::infinity();
-            double y_min = std::numeric_limits<double>::infinity();
-            double y_max = -std::numeric_limits<double>::infinity();
-
-            for (const auto& row : mat) {
-                if (row.size() < 2) {
-                    continue;
-                }
-                const double x = row[0];
-                const double y = row[1];
-                x_data.push_back(x);
-                y_data.push_back(y);
-                x_min = std::min(x_min, x);
-                x_max = std::max(x_max, x);
-                y_min = std::min(y_min, y);
-                y_max = std::max(y_max, y);
-            }
-
-            if (!x_data.empty()) {
-                PlotConfig cfg;
-                cfg.x_min = x_min;
-                cfg.x_max = x_max;
-                cfg.y_min = y_min;
-                cfg.y_max = y_max;
-
-                if (cfg.x_min == cfg.x_max) {
-                    cfg.x_min -= 1.0;
-                    cfg.x_max += 1.0;
-                }
-                if (cfg.y_min == cfg.y_max) {
-                    cfg.y_min -= 1.0;
-                    cfg.y_max += 1.0;
-                }
-
-                PlotEngine plot_engine;
-                std::cout << plot_engine.PlotData(x_data, y_data, cfg);
-                return 0;
-            }
+        if (mode == AXIOM::CalculationMode::PLOT && try_plot_matrix(mat)) {
+            return 0;
         }
 
-        for (const auto& row : mat) {
-            printf("[");
-            for (size_t i = 0; i < row.size(); ++i) {
-                printf("%.15g%s", row[i], (i + 1 < row.size()) ? ", " : "");
-            }
-            printf("]\n");
-        }
+        print_matrix_rows(mat);
         return 0;
     }
 
     if (std::holds_alternative<std::string>(value)) {
         const auto& str_value = std::get<std::string>(value);
-        if (mode == AXIOM::CalculationMode::PLOT && str_value.rfind("PLOT_FUNCTION:", 0) == 0) {
-            const std::string payload = str_value.substr(std::string("PLOT_FUNCTION:").size());
-            std::vector<std::string> parts;
-            size_t start = 0;
-            for (size_t i = 0; i <= payload.size(); ++i) {
-                if (i == payload.size() || payload[i] == ',') {
-                    std::string token = payload.substr(start, i - start);
-                    auto first = token.find_first_not_of(" \t\r\n");
-                    if (first != std::string::npos) {
-                        auto last = token.find_last_not_of(" \t\r\n");
-                        token = token.substr(first, last - first + 1);
-                    }
-                    parts.push_back(token);
-                    start = i + 1;
-                }
-            }
-
-            if (parts.size() == 5) {
-                try {
-                    PlotConfig cfg;
-                    cfg.x_min = std::stod(parts[1]);
-                    cfg.x_max = std::stod(parts[2]);
-                    cfg.y_min = std::stod(parts[3]);
-                    cfg.y_max = std::stod(parts[4]);
-                    PlotEngine plot_engine;
-                    std::cout << plot_engine.PlotFunction(parts[0], cfg);
-                    return 0;
-                } catch (...) {
-                    std::cerr << "Error: Invalid plot configuration" << "\n";
-                    return 1;
-                }
-            }
+        const int plot_rc = try_print_plot_from_string(str_value, mode);
+        if (plot_rc >= 0) {
+            return plot_rc;
         }
 
         std::cout << str_value << "\n";
@@ -732,89 +890,25 @@ int main(int argc, char* argv[]) {
         return run_interactive_mode();
     }
     
-    if (std::find(args.begin(), args.end(), "--help") != args.end() ||
-        std::find(args.begin(), args.end(), "-h") != args.end()) {
+    if (std::ranges::find(args, "--help") != args.end() ||
+        std::ranges::find(args, "-h") != args.end()) {
         print_help();
         return 0;
     }
     
     // Check for interactive mode (persistent subprocess for GUI)
-    if (std::find(args.begin(), args.end(), "--interactive") != args.end()) {
-        // Initialize calculation engine once
-        auto calc = std::make_unique<AXIOM::DynamicCalc>();
-        AXIOM::CalculationMode current_mode = AXIOM::CalculationMode::ALGEBRAIC;
-        
-        std::string line;
-        while (std::getline(std::cin, line)) {
-            // Normalize Windows/Unix line endings and surrounding spaces.
-            auto first = line.find_first_not_of(" \t\r\n");
-            if (first == std::string::npos) {
-                continue;
-            }
-            auto last = line.find_last_not_of(" \t\r\n");
-            line = line.substr(first, last - first + 1);
-
-            if (line == "exit" || line == "quit") {
-                break;
-            }
-            
-            // Handle mode changes (e.g., ":mode linear")
-            if (line.rfind(":mode ", 0) == 0) {
-                std::string mode_str = line.substr(6);
-                auto first_mode = mode_str.find_first_not_of(" \t\r\n");
-                if (first_mode == std::string::npos) {
-                    std::cout << "Error: Missing mode name\n";
-                    std::cout << "__END__\n" << std::flush;
-                    continue;
-                }
-                auto last_mode = mode_str.find_last_not_of(" \t\r\n");
-                mode_str = mode_str.substr(first_mode, last_mode - first_mode + 1);
-
-                AXIOM::CalculationMode parsed_mode = AXIOM::CalculationMode::ALGEBRAIC;
-                if (!try_parse_mode(mode_str, parsed_mode)) {
-                    std::cout << "Error: Unknown mode '" << mode_str << "'\n";
-                    std::cout << "__END__\n" << std::flush;
-                    continue;
-                }
-                if (!is_mode_supported(parsed_mode)) {
-                    std::cout << "Error: Mode '" << mode_str << "' is not enabled in this build\n";
-                    std::cout << "__END__\n" << std::flush;
-                    continue;
-                }
-
-                current_mode = parsed_mode;
-                std::cout << "Mode changed to " << AXIOM::mode_to_string(current_mode) << "\n";
-                std::cout << "__END__\n" << std::flush;
-                continue;
-            }
-            
-            // Execute command
-            try {
-                calc->SetMode(current_mode);
-                auto basic_result = calc->Evaluate(line);
-                print_result(basic_result, current_mode);
-                std::cout << "__END__\n" << std::flush;
-            } catch (const std::runtime_error& e) {
-                // Keep machine protocol on stdout so clients only reading stdout still receive errors.
-                std::cout << "Runtime error: " << e.what() << "\n";
-                std::cout << "__END__\n" << std::flush;
-            } catch (const std::exception& e) {
-                // Keep machine protocol on stdout so clients only reading stdout still receive errors.
-                std::cout << "Error: " << e.what() << "\n";
-                std::cout << "__END__\n" << std::flush;
-            }
-        }
-        return 0;
+    if (std::ranges::find(args, "--interactive") != args.end()) {
+        return run_interactive_subprocess();
     }
     
     // Check for daemon mode
 #ifdef ENABLE_DAEMON_MODE
-    if (std::find(args.begin(), args.end(), "--daemon") != args.end()) {
+    if (std::ranges::find(args, "--daemon") != args.end()) {
         return run_daemon_mode(args);
     }
     
     // Check for daemon status
-    if (std::find(args.begin(), args.end(), "--daemon-status") != args.end()) {
+    if (std::ranges::find(args, "--daemon-status") != args.end()) {
         bool running = AXIOM::DaemonClient::is_daemon_running();
         std::cout << "🔍 Daemon status: " << (running ? "🟢 RUNNING" : "🔴 STOPPED") << "\n";
         return running ? 0 : 1;
@@ -822,48 +916,43 @@ int main(int argc, char* argv[]) {
 #endif
     
     // Check for GUI mode
-    if (std::find(args.begin(), args.end(), "--gui-qt") != args.end()) {
+    if (std::ranges::find(args, "--gui-qt") != args.end()) {
         return launch_gui_interface(true, false);
     }
 
-    if (std::find(args.begin(), args.end(), "--gui-standard") != args.end()) {
+    if (std::ranges::find(args, "--gui-standard") != args.end()) {
         return launch_gui_interface(true, true);
     }
 
-    if (std::find(args.begin(), args.end(), "--gui") != args.end()) {
+    if (std::ranges::find(args, "--gui") != args.end()) {
         return launch_gui_interface(false, false);
     }
     
     // Check for benchmark mode
-    if (std::find(args.begin(), args.end(), "--benchmark") != args.end()) {
+    if (std::ranges::find(args, "--benchmark") != args.end()) {
         return run_benchmark_mode();
     }
     
-    // Command line execution with mode support
-    if (!args.empty()) {
-        AXIOM::CalculationMode mode = AXIOM::CalculationMode::ALGEBRAIC;
-        std::string expression;
-
-        for (size_t i = 0; i < args.size(); ++i) {
-            const auto& arg = args[i];
+    auto parse_cli_expression = [](const std::vector<std::string>& cli_args,
+                                   AXIOM::CalculationMode& mode,
+                                   std::string& expression) -> bool {
+        mode = AXIOM::CalculationMode::ALGEBRAIC;
+        for (size_t i = 0; i < cli_args.size(); ++i) {
+            const auto& arg = cli_args[i];
             if (arg.rfind("--mode=", 0) == 0) {
-                AXIOM::CalculationMode parsed_mode = AXIOM::CalculationMode::ALGEBRAIC;
                 const std::string mode_arg = arg.substr(7);
-                if (!try_parse_mode(mode_arg, parsed_mode)) {
+                if (!try_parse_mode(mode_arg, mode)) {
                     std::cerr << "Error: Unknown mode '" << mode_arg << "'\n";
-                    return 1;
+                    return false;
                 }
-                mode = parsed_mode;
                 continue;
             }
-            if (arg == "--mode" && i + 1 < args.size()) {
-                AXIOM::CalculationMode parsed_mode = AXIOM::CalculationMode::ALGEBRAIC;
-                const std::string mode_arg = args[i + 1];
-                if (!try_parse_mode(mode_arg, parsed_mode)) {
+            if (arg == "--mode" && i + 1 < cli_args.size()) {
+                const std::string mode_arg = cli_args[i + 1];
+                if (!try_parse_mode(mode_arg, mode)) {
                     std::cerr << "Error: Unknown mode '" << mode_arg << "'\n";
-                    return 1;
+                    return false;
                 }
-                mode = parsed_mode;
                 ++i;
                 continue;
             }
@@ -877,6 +966,16 @@ int main(int argc, char* argv[]) {
                 expression += " ";
             }
             expression += arg;
+        }
+        return true;
+    };
+
+    // Command line execution with mode support
+    if (!args.empty()) {
+        AXIOM::CalculationMode mode = AXIOM::CalculationMode::ALGEBRAIC;
+        std::string expression;
+        if (!parse_cli_expression(args, mode, expression)) {
+            return 1;
         }
 
         if (expression.empty()) {

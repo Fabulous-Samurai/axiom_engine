@@ -9,12 +9,37 @@
 #include <exception>
 #include <iostream>
 #include <cmath>
+#include <numbers>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <format>
 #include <set>
 #include <shared_mutex>
 #include <mutex>
+
+namespace AXIOM {
+
+// --- Constants and SafeMath (used by this translation unit) ---
+namespace {
+    constexpr double PI_CONST = std::numbers::pi;
+    constexpr double D2R = std::numbers::pi / 180.0;
+    constexpr double R2D = 180.0 / std::numbers::pi;
+
+    struct SafeMath {
+        static std::optional<double> SafeAdd(double a, double b) {
+            double result = a + b;
+            if (!std::isfinite(result)) return std::nullopt;
+            return result;
+        }
+        static std::optional<double> SafePow(double base, double exp) {
+            double result = std::pow(base, exp);
+            if (!std::isfinite(result)) return std::nullopt;
+            return result;
+        }
+        static bool IsFiniteAndSafe(double val) { return std::isfinite(val); }
+    };
+} // anonymous namespace
 
 // --- Helpers ---
 
@@ -48,20 +73,12 @@ std::string FormatNumber(double val) {
     }
     
     // For normal floating point numbers
-    char buffer[64];
-    double abs_val = std::abs(val);
+    const double abs_val = std::abs(val);
     
     if (abs_val >= 1e6 || (abs_val > 0 && abs_val < 1e-6)) {
-        // Use scientific notation for very large or very small numbers
-        // SECURITY FIX: Use snprintf instead of sprintf to prevent buffer overflow
-        snprintf(buffer, sizeof(buffer), "%.6e", val);
-    } else {
-        // Use high precision for normal numbers - let's try 15 digits
-        // SECURITY FIX: Use snprintf instead of sprintf to prevent buffer overflow
-        snprintf(buffer, sizeof(buffer), "%.15g", val);
+        return std::format("{:.6e}", val);
     }
-    
-    return std::string(buffer);
+    return std::format("{:.15g}", val);
 }
 
 // ========================================================
@@ -71,9 +88,10 @@ std::string FormatNumber(double val) {
 struct NumberNode : ExprNode {
     double value;
     explicit NumberNode(double v) : value(v) {}
+    NodeType GetType() const override { return NodeType::Number; }
     
     
-    EvalResult Evaluate(const std::map<std::string, AXIOM::Number>&) const override { return EvalResult::Success(value); }
+    EvalResult Evaluate(const StringUnorderedMap<AXIOM::Number>&) const override { return EvalResult::Success(value); }
     
     NodePtr Derivative(Arena& arena, std::string_view) const override { return arena.alloc<NumberNode>(0.0); }
     NodePtr Simplify(Arena& arena) const override { return arena.alloc<NumberNode>(value); }
@@ -83,11 +101,11 @@ struct NumberNode : ExprNode {
 struct VariableNode : ExprNode {
     std::string_view name;
     explicit VariableNode(std::string_view n) : name(n) {}
+    NodeType GetType() const override { return NodeType::Variable; }
     
-    EvalResult Evaluate(const std::map<std::string, AXIOM::Number>& vars) const override {
+    EvalResult Evaluate(const StringUnorderedMap<AXIOM::Number>& vars) const override {
         std::string key(name);
-        auto it = vars.find(key);
-        if (it != vars.end()) {
+        if (auto it = vars.find(key); it != vars.end()) {
             // Extract real value from AXIOM::Number
             double real_value = AXIOM::GetReal(it->second);
             return EvalResult::Success(real_value);
@@ -96,8 +114,8 @@ struct VariableNode : ExprNode {
         
         // Mathematical constants
         if (key == "pi" || key == "PI") return EvalResult::Success(PI_CONST);
-        if (key == "e" || key == "E") return EvalResult::Success(2.718281828459045);
-        if (key == "phi") return EvalResult::Success(1.618033988749895); // Golden ratio
+        if (key == "e" || key == "E") return EvalResult::Success(std::numbers::e);
+        if (key == "phi") return EvalResult::Success(std::numbers::phi); // Golden ratio
         
         return EvalResult::Failure(CalcErr::ArgumentMismatch);
     }
@@ -116,9 +134,10 @@ struct BinaryOpNode : ExprNode {
     NodePtr right;
     
     BinaryOpNode(char c, NodePtr l, NodePtr r) : op(c), left(l), right(r) {}
+    NodeType GetType() const override { return NodeType::BinaryOp; }
     
     
-    EvalResult Evaluate(const std::map<std::string, AXIOM::Number>& vars) const override {
+    EvalResult Evaluate(const StringUnorderedMap<AXIOM::Number>& vars) const override {
         auto left_eval = left->Evaluate(vars);
         if (!left_eval.HasValue()) return left_eval;
         auto right_eval = right->Evaluate(vars);
@@ -233,6 +252,7 @@ struct BinaryOpNode : ExprNode {
 struct UnaryOpNode : ExprNode {
     std::string_view func; NodePtr operand;
     UnaryOpNode(std::string_view f, NodePtr op) : func(f), operand(op) {}
+    NodeType GetType() const override { return NodeType::UnaryOp; }
     
     /**
      * @brief O(1) function lookup table for mathematical operations
@@ -291,7 +311,7 @@ struct UnaryOpNode : ExprNode {
         return func_map;
     }
     
-    EvalResult Evaluate(const std::map<std::string, AXIOM::Number>& vars) const override {
+    EvalResult Evaluate(const StringUnorderedMap<AXIOM::Number>& vars) const override {
         auto inner = operand->Evaluate(vars);
         if (!inner.HasValue()) return inner;
         
@@ -317,17 +337,17 @@ struct UnaryOpNode : ExprNode {
             return EvalResult::Success(result);
         }
         
-        // O(1) lookup in function map (convert string_view to string for lookup)
         const auto& func_map = GetFunctionMap();
-        auto it = func_map.find(std::string(func));
-        if (it != func_map.end()) {
+        if (auto it = func_map.find(std::string(func)); it != func_map.end()) {
             try {
                 double result = it->second(val);
                 if (!std::isfinite(result)) {
                     return EvalResult::Failure(CalcErr::DomainError);
                 }
                 return EvalResult::Success(result);
-            } catch (...) {
+            } catch (const std::domain_error&) {
+                return EvalResult::Failure(CalcErr::DomainError);
+            } catch (const std::invalid_argument&) {
                 return EvalResult::Failure(CalcErr::DomainError);
             }
         }
@@ -336,186 +356,202 @@ struct UnaryOpNode : ExprNode {
         return EvalResult::Success(0.0);
     }
     
-    NodePtr Derivative(Arena& arena, std::string_view var) const override {
-        auto d_inner = operand->Derivative(arena, var);
-        if (func == "u-") return arena.alloc<UnaryOpNode>("u-", d_inner);
-        
-        if (func == "sin") {
-            auto cos_u = arena.alloc<UnaryOpNode>("cos", operand);
-            return arena.alloc<BinaryOpNode>('*', cos_u, d_inner);
-        }
-        if (func == "cos") {
-            auto sin_u = arena.alloc<UnaryOpNode>("sin", operand);
-            auto neg_sin = arena.alloc<UnaryOpNode>("u-", sin_u);
-            return arena.alloc<BinaryOpNode>('*', neg_sin, d_inner);
-        }
-        if (func == "tan") {
-            auto sec_u = arena.alloc<UnaryOpNode>("sec", operand);
-            auto sec_sq = arena.alloc<BinaryOpNode>('^', sec_u, arena.alloc<NumberNode>(2.0));
-            return arena.alloc<BinaryOpNode>('*', sec_sq, d_inner);
-        }
-        if (func == "cot") {
-            auto csc_u = arena.alloc<UnaryOpNode>("csc", operand);
-            auto csc_sq = arena.alloc<BinaryOpNode>('^', csc_u, arena.alloc<NumberNode>(2.0));
-            auto neg = arena.alloc<UnaryOpNode>("u-", csc_sq);
-            return arena.alloc<BinaryOpNode>('*', neg, d_inner);
-        }
-        if (func == "sec") {
-            auto sec_u = arena.alloc<UnaryOpNode>("sec", operand);
-            auto tan_u = arena.alloc<UnaryOpNode>("tan", operand);
-            auto prod = arena.alloc<BinaryOpNode>('*', sec_u, tan_u);
-            return arena.alloc<BinaryOpNode>('*', prod, d_inner);
-        }
-        if (func == "csc") {
-            auto csc_u = arena.alloc<UnaryOpNode>("csc", operand);
-            auto cot_u = arena.alloc<UnaryOpNode>("cot", operand);
-            auto prod = arena.alloc<BinaryOpNode>('*', csc_u, cot_u);
-            auto neg = arena.alloc<UnaryOpNode>("u-", prod);
-            return arena.alloc<BinaryOpNode>('*', neg, d_inner);
-        }
-        if (func == "ln") return arena.alloc<BinaryOpNode>('/', d_inner, operand);
-        if (func == "log2" || func == "lg") {
-            auto ln2 = arena.alloc<NumberNode>(std::log(2.0));
-            auto denom = arena.alloc<BinaryOpNode>('*', operand, ln2);
-            return arena.alloc<BinaryOpNode>('/', d_inner, denom);
-        }
-        if (func == "sqrt") {
-            auto two = arena.alloc<NumberNode>(2.0);
-            auto sqrt_u = arena.alloc<UnaryOpNode>("sqrt", operand);
-            auto denom = arena.alloc<BinaryOpNode>('*', two, sqrt_u);
-            return arena.alloc<BinaryOpNode>('/', d_inner, denom);
-        }
-        if (func == "exp") {
-            auto exp_u = arena.alloc<UnaryOpNode>("exp", operand);
-            return arena.alloc<BinaryOpNode>('*', exp_u, d_inner);
-        }
-        if (func == "asin") {
-            auto one = arena.alloc<NumberNode>(1.0);
-            auto inner_sq = arena.alloc<BinaryOpNode>('^', operand, arena.alloc<NumberNode>(2.0));
-            auto radicand = arena.alloc<BinaryOpNode>('-', one, inner_sq);
-            auto denom = arena.alloc<UnaryOpNode>("sqrt", radicand);
-            return arena.alloc<BinaryOpNode>('/', d_inner, denom);
-        }
-        if (func == "acos") {
-            auto one = arena.alloc<NumberNode>(1.0);
-            auto inner_sq = arena.alloc<BinaryOpNode>('^', operand, arena.alloc<NumberNode>(2.0));
-            auto radicand = arena.alloc<BinaryOpNode>('-', one, inner_sq);
-            auto denom = arena.alloc<UnaryOpNode>("sqrt", radicand);
-            auto neg = arena.alloc<UnaryOpNode>("u-", arena.alloc<BinaryOpNode>('/', d_inner, denom));
-            return neg;
-        }
-        if (func == "atan") {
-            auto one = arena.alloc<NumberNode>(1.0);
-            auto inner_sq = arena.alloc<BinaryOpNode>('^', operand, arena.alloc<NumberNode>(2.0));
-            auto denom = arena.alloc<BinaryOpNode>('+', one, inner_sq);
-            return arena.alloc<BinaryOpNode>('/', d_inner, denom);
-        }
-        if (func == "acot") {
-            auto one = arena.alloc<NumberNode>(1.0);
-            auto inner_sq = arena.alloc<BinaryOpNode>('^', operand, arena.alloc<NumberNode>(2.0));
-            auto denom = arena.alloc<BinaryOpNode>('-', inner_sq, one);
-            auto neg = arena.alloc<UnaryOpNode>("u-", arena.alloc<BinaryOpNode>('/', d_inner, denom));
-            return neg;
-        }
-        if (func == "asec") {
-            auto one = arena.alloc<NumberNode>(1.0);
-            auto inner_sq = arena.alloc<BinaryOpNode>('^', operand, arena.alloc<NumberNode>(2.0));
-            auto radicand = arena.alloc<BinaryOpNode>('-', inner_sq, one);
-            auto sqrt = arena.alloc<UnaryOpNode>("sqrt", radicand);
-            auto denom = arena.alloc<BinaryOpNode>('*', operand, sqrt);
-            return arena.alloc<BinaryOpNode>('/', d_inner, denom);
-        }
-        if (func == "acsc") {
-            auto one = arena.alloc<NumberNode>(1.0);
-            auto inner_sq = arena.alloc<BinaryOpNode>('^', operand, arena.alloc<NumberNode>(2.0));
-            auto radicand = arena.alloc<BinaryOpNode>('-', inner_sq, one);
-            auto sqrt = arena.alloc<UnaryOpNode>("sqrt", radicand);
-            auto denom = arena.alloc<BinaryOpNode>('*', operand, sqrt);
-            auto neg = arena.alloc<UnaryOpNode>("u-", arena.alloc<BinaryOpNode>('/', d_inner, denom));
-            return neg;
-        }
-        if (func == "sinh") {
-            auto cosh_u = arena.alloc<UnaryOpNode>("cosh", operand);
-            return arena.alloc<BinaryOpNode>('*', cosh_u, d_inner);
-        }
-        if (func == "cosh") {
-            auto sinh_u = arena.alloc<UnaryOpNode>("sinh", operand);
-            return arena.alloc<BinaryOpNode>('*', sinh_u, d_inner);
-        }
-        if (func == "tanh") {
-            auto sech_u = arena.alloc<UnaryOpNode>("sech", operand);
-            auto sech_sq = arena.alloc<BinaryOpNode>('^', sech_u, arena.alloc<NumberNode>(2.0));
-            return arena.alloc<BinaryOpNode>('*', sech_sq, d_inner);
-        }
-        if (func == "coth") {
-            auto csch_u = arena.alloc<UnaryOpNode>("csch", operand);
-            auto csch_sq = arena.alloc<BinaryOpNode>('^', csch_u, arena.alloc<NumberNode>(2.0));
-            auto neg = arena.alloc<UnaryOpNode>("u-", csch_sq);
-            return arena.alloc<BinaryOpNode>('*', neg, d_inner);
-        }
-        if (func == "sech") {
-            auto sech_u = arena.alloc<UnaryOpNode>("sech", operand);
-            auto tanh_u = arena.alloc<UnaryOpNode>("tanh", operand);
-            auto prod = arena.alloc<BinaryOpNode>('*', sech_u, tanh_u);
-            auto neg = arena.alloc<UnaryOpNode>("u-", prod);
-            return arena.alloc<BinaryOpNode>('*', neg, d_inner);
-        }
-        if (func == "csch") {
-            auto csch_u = arena.alloc<UnaryOpNode>("csch", operand);
-            auto coth_u = arena.alloc<UnaryOpNode>("coth", operand);
-            auto prod = arena.alloc<BinaryOpNode>('*', csch_u, coth_u);
-            auto neg = arena.alloc<UnaryOpNode>("u-", prod);
-            return arena.alloc<BinaryOpNode>('*', neg, d_inner);
-        }
-        if (func == "asinh") {
-            auto inner_sq = arena.alloc<BinaryOpNode>('^', operand, arena.alloc<NumberNode>(2.0));
-            auto radicand = arena.alloc<BinaryOpNode>('+', inner_sq, arena.alloc<NumberNode>(1.0));
-            auto sqrt = arena.alloc<UnaryOpNode>("sqrt", radicand);
-            return arena.alloc<BinaryOpNode>('/', d_inner, sqrt);
-        }
-        if (func == "acosh") {
-            auto one = arena.alloc<NumberNode>(1.0);
-            auto minus = arena.alloc<BinaryOpNode>('-', operand, one);
-            auto plus = arena.alloc<BinaryOpNode>('+', operand, one);
-            auto sqrt1 = arena.alloc<UnaryOpNode>("sqrt", minus);
-            auto sqrt2 = arena.alloc<UnaryOpNode>("sqrt", plus);
-            auto denom = arena.alloc<BinaryOpNode>('*', sqrt1, sqrt2);
-            return arena.alloc<BinaryOpNode>('/', d_inner, denom);
-        }
-        if (func == "atanh") {
-            auto one = arena.alloc<NumberNode>(1.0);
-            auto inner_sq = arena.alloc<BinaryOpNode>('^', operand, arena.alloc<NumberNode>(2.0));
-            auto denom = arena.alloc<BinaryOpNode>('-', one, inner_sq);
-            return arena.alloc<BinaryOpNode>('/', d_inner, denom);
-        }
-        if (func == "acoth") {
-            auto one = arena.alloc<NumberNode>(1.0);
-            auto inner_sq = arena.alloc<BinaryOpNode>('^', operand, arena.alloc<NumberNode>(2.0));
-            auto denom = arena.alloc<BinaryOpNode>('-', one, inner_sq);
-            return arena.alloc<BinaryOpNode>('/', d_inner, denom);
-        }
-        if (func == "asech") {
-            auto one = arena.alloc<NumberNode>(1.0);
-            auto inner_sq = arena.alloc<BinaryOpNode>('^', operand, arena.alloc<NumberNode>(2.0));
-            auto radicand = arena.alloc<BinaryOpNode>('-', one, inner_sq);
-            auto sqrt = arena.alloc<UnaryOpNode>("sqrt", radicand);
-            auto denom = arena.alloc<BinaryOpNode>('*', operand, sqrt);
-            auto neg = arena.alloc<UnaryOpNode>("u-", arena.alloc<BinaryOpNode>('/', d_inner, denom));
-            return neg;
-        }
-        if (func == "acsch") {
-            auto one = arena.alloc<NumberNode>(1.0);
-            auto inner_sq = arena.alloc<BinaryOpNode>('^', operand, arena.alloc<NumberNode>(2.0));
-            auto radicand = arena.alloc<BinaryOpNode>('+', inner_sq, one);
-            auto sqrt = arena.alloc<UnaryOpNode>("sqrt", radicand);
-            auto denom = arena.alloc<BinaryOpNode>('*', operand, sqrt);
-            auto neg = arena.alloc<UnaryOpNode>("u-", arena.alloc<BinaryOpNode>('/', d_inner, denom));
-            return neg;
-        }
-        
-        return arena.alloc<NumberNode>(0.0);
+    using DerivFunc = std::function<NodePtr(Arena&, NodePtr, NodePtr)>;
+    
+    static const std::unordered_map<std::string, DerivFunc>& GetDerivativeMap() {
+        static const std::unordered_map<std::string, DerivFunc> deriv_map = {
+            {"u-", [](Arena& a, NodePtr op, NodePtr d_in) { return a.alloc<UnaryOpNode>("u-", d_in); }},
+            {"sin", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                return a.alloc<BinaryOpNode>('*', a.alloc<UnaryOpNode>("cos", op), d_in); 
+            }},
+            {"cos", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto sin_u = a.alloc<UnaryOpNode>("sin", op);
+                auto neg_sin = a.alloc<UnaryOpNode>("u-", sin_u);
+                return a.alloc<BinaryOpNode>('*', neg_sin, d_in);
+            }},
+            {"tan", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto sec_u = a.alloc<UnaryOpNode>("sec", op);
+                auto sec_sq = a.alloc<BinaryOpNode>('^', sec_u, a.alloc<NumberNode>(2.0));
+                return a.alloc<BinaryOpNode>('*', sec_sq, d_in);
+            }},
+            {"cot", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto csc_u = a.alloc<UnaryOpNode>("csc", op);
+                auto csc_sq = a.alloc<BinaryOpNode>('^', csc_u, a.alloc<NumberNode>(2.0));
+                auto neg = a.alloc<UnaryOpNode>("u-", csc_sq);
+                return a.alloc<BinaryOpNode>('*', neg, d_in);
+            }},
+            {"sec", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto sec_u = a.alloc<UnaryOpNode>("sec", op);
+                auto tan_u = a.alloc<UnaryOpNode>("tan", op);
+                auto prod = a.alloc<BinaryOpNode>('*', sec_u, tan_u);
+                return a.alloc<BinaryOpNode>('*', prod, d_in);
+            }},
+            {"csc", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto csc_u = a.alloc<UnaryOpNode>("csc", op);
+                auto cot_u = a.alloc<UnaryOpNode>("cot", op);
+                auto prod = a.alloc<BinaryOpNode>('*', csc_u, cot_u);
+                auto neg = a.alloc<UnaryOpNode>("u-", prod);
+                return a.alloc<BinaryOpNode>('*', neg, d_in);
+            }},
+            {"ln", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                return a.alloc<BinaryOpNode>('/', d_in, op); 
+            }},
+            {"log2", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto ln2 = a.alloc<NumberNode>(std::log(2.0));
+                auto denom = a.alloc<BinaryOpNode>('*', op, ln2);
+                return a.alloc<BinaryOpNode>('/', d_in, denom);
+            }},
+            {"lg", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto ln2 = a.alloc<NumberNode>(std::log(2.0));
+                auto denom = a.alloc<BinaryOpNode>('*', op, ln2);
+                return a.alloc<BinaryOpNode>('/', d_in, denom);
+            }},
+            {"sqrt", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto two = a.alloc<NumberNode>(2.0);
+                auto sqrt_u = a.alloc<UnaryOpNode>("sqrt", op);
+                auto denom = a.alloc<BinaryOpNode>('*', two, sqrt_u);
+                return a.alloc<BinaryOpNode>('/', d_in, denom);
+            }},
+            {"exp", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto exp_u = a.alloc<UnaryOpNode>("exp", op);
+                return a.alloc<BinaryOpNode>('*', exp_u, d_in);
+            }},
+            {"asin", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto one = a.alloc<NumberNode>(1.0);
+                auto inner_sq = a.alloc<BinaryOpNode>('^', op, a.alloc<NumberNode>(2.0));
+                auto radicand = a.alloc<BinaryOpNode>('-', one, inner_sq);
+                auto denom = a.alloc<UnaryOpNode>("sqrt", radicand);
+                return a.alloc<BinaryOpNode>('/', d_in, denom);
+            }},
+            {"acos", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto one = a.alloc<NumberNode>(1.0);
+                auto inner_sq = a.alloc<BinaryOpNode>('^', op, a.alloc<NumberNode>(2.0));
+                auto radicand = a.alloc<BinaryOpNode>('-', one, inner_sq);
+                auto denom = a.alloc<UnaryOpNode>("sqrt", radicand);
+                auto neg = a.alloc<UnaryOpNode>("u-", a.alloc<BinaryOpNode>('/', d_in, denom));
+                return neg;
+            }},
+            {"atan", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto one = a.alloc<NumberNode>(1.0);
+                auto inner_sq = a.alloc<BinaryOpNode>('^', op, a.alloc<NumberNode>(2.0));
+                auto denom = a.alloc<BinaryOpNode>('+', one, inner_sq);
+                return a.alloc<BinaryOpNode>('/', d_in, denom);
+            }},
+            {"acot", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto one = a.alloc<NumberNode>(1.0);
+                auto inner_sq = a.alloc<BinaryOpNode>('^', op, a.alloc<NumberNode>(2.0));
+                auto denom = a.alloc<BinaryOpNode>('-', inner_sq, one);
+                auto neg = a.alloc<UnaryOpNode>("u-", a.alloc<BinaryOpNode>('/', d_in, denom));
+                return neg;
+            }},
+            {"asec", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto one = a.alloc<NumberNode>(1.0);
+                auto inner_sq = a.alloc<BinaryOpNode>('^', op, a.alloc<NumberNode>(2.0));
+                auto radicand = a.alloc<BinaryOpNode>('-', inner_sq, one);
+                auto sqrt = a.alloc<UnaryOpNode>("sqrt", radicand);
+                auto denom = a.alloc<BinaryOpNode>('*', op, sqrt);
+                return a.alloc<BinaryOpNode>('/', d_in, denom);
+            }},
+            {"acsc", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto one = a.alloc<NumberNode>(1.0);
+                auto inner_sq = a.alloc<BinaryOpNode>('^', op, a.alloc<NumberNode>(2.0));
+                auto radicand = a.alloc<BinaryOpNode>('-', inner_sq, one);
+                auto sqrt = a.alloc<UnaryOpNode>("sqrt", radicand);
+                auto denom = a.alloc<BinaryOpNode>('*', op, sqrt);
+                auto neg = a.alloc<UnaryOpNode>("u-", a.alloc<BinaryOpNode>('/', d_in, denom));
+                return neg;
+            }},
+            {"sinh", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto cosh_u = a.alloc<UnaryOpNode>("cosh", op);
+                return a.alloc<BinaryOpNode>('*', cosh_u, d_in);
+            }},
+            {"cosh", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto sinh_u = a.alloc<UnaryOpNode>("sinh", op);
+                return a.alloc<BinaryOpNode>('*', sinh_u, d_in);
+            }},
+            {"tanh", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto sech_u = a.alloc<UnaryOpNode>("sech", op);
+                auto sech_sq = a.alloc<BinaryOpNode>('^', sech_u, a.alloc<NumberNode>(2.0));
+                return a.alloc<BinaryOpNode>('*', sech_sq, d_in);
+            }},
+            {"coth", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto csch_u = a.alloc<UnaryOpNode>("csch", op);
+                auto csch_sq = a.alloc<BinaryOpNode>('^', csch_u, a.alloc<NumberNode>(2.0));
+                auto neg = a.alloc<UnaryOpNode>("u-", csch_sq);
+                return a.alloc<BinaryOpNode>('*', neg, d_in);
+            }},
+            {"sech", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto sech_u = a.alloc<UnaryOpNode>("sech", op);
+                auto tanh_u = a.alloc<UnaryOpNode>("tanh", op);
+                auto prod = a.alloc<BinaryOpNode>('*', sech_u, tanh_u);
+                auto neg = a.alloc<UnaryOpNode>("u-", prod);
+                return a.alloc<BinaryOpNode>('*', neg, d_in);
+            }},
+            {"csch", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto csch_u = a.alloc<UnaryOpNode>("csch", op);
+                auto coth_u = a.alloc<UnaryOpNode>("coth", op);
+                auto prod = a.alloc<BinaryOpNode>('*', csch_u, coth_u);
+                auto neg = a.alloc<UnaryOpNode>("u-", prod);
+                return a.alloc<BinaryOpNode>('*', neg, d_in);
+            }},
+            {"asinh", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto inner_sq = a.alloc<BinaryOpNode>('^', op, a.alloc<NumberNode>(2.0));
+                auto radicand = a.alloc<BinaryOpNode>('+', inner_sq, a.alloc<NumberNode>(1.0));
+                auto sqrt = a.alloc<UnaryOpNode>("sqrt", radicand);
+                return a.alloc<BinaryOpNode>('/', d_in, sqrt);
+            }},
+            {"acosh", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto one = a.alloc<NumberNode>(1.0);
+                auto minus = a.alloc<BinaryOpNode>('-', op, one);
+                auto plus = a.alloc<BinaryOpNode>('+', op, one);
+                auto sqrt1 = a.alloc<UnaryOpNode>("sqrt", minus);
+                auto sqrt2 = a.alloc<UnaryOpNode>("sqrt", plus);
+                auto denom = a.alloc<BinaryOpNode>('*', sqrt1, sqrt2);
+                return a.alloc<BinaryOpNode>('/', d_in, denom);
+            }},
+            {"atanh", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto one = a.alloc<NumberNode>(1.0);
+                auto inner_sq = a.alloc<BinaryOpNode>('^', op, a.alloc<NumberNode>(2.0));
+                auto denom = a.alloc<BinaryOpNode>('-', one, inner_sq);
+                return a.alloc<BinaryOpNode>('/', d_in, denom);
+            }},
+            {"acoth", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto one = a.alloc<NumberNode>(1.0);
+                auto inner_sq = a.alloc<BinaryOpNode>('^', op, a.alloc<NumberNode>(2.0));
+                auto denom = a.alloc<BinaryOpNode>('-', one, inner_sq);
+                return a.alloc<BinaryOpNode>('/', d_in, denom);
+            }},
+            {"asech", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto one = a.alloc<NumberNode>(1.0);
+                auto inner_sq = a.alloc<BinaryOpNode>('^', op, a.alloc<NumberNode>(2.0));
+                auto radicand = a.alloc<BinaryOpNode>('-', one, inner_sq);
+                auto sqrt = a.alloc<UnaryOpNode>("sqrt", radicand);
+                auto denom = a.alloc<BinaryOpNode>('*', op, sqrt);
+                auto neg = a.alloc<UnaryOpNode>("u-", a.alloc<BinaryOpNode>('/', d_in, denom));
+                return neg;
+            }},
+            {"acsch", [](Arena& a, NodePtr op, NodePtr d_in) { 
+                auto one = a.alloc<NumberNode>(1.0);
+                auto inner_sq = a.alloc<BinaryOpNode>('^', op, a.alloc<NumberNode>(2.0));
+                auto radicand = a.alloc<BinaryOpNode>('+', inner_sq, one);
+                auto sqrt = a.alloc<UnaryOpNode>("sqrt", radicand);
+                auto denom = a.alloc<BinaryOpNode>('*', op, sqrt);
+                auto neg = a.alloc<UnaryOpNode>("u-", a.alloc<BinaryOpNode>('/', d_in, denom));
+                return neg;
+            }}
+        };
+        return deriv_map;
     }
 
+    NodePtr Derivative(Arena& arena, std::string_view var) const override {
+        auto d_inner = operand->Derivative(arena, var);
+        const auto& deriv_map = GetDerivativeMap();
+        if (auto it = deriv_map.find(std::string(func)); it != deriv_map.end()) {
+            return it->second(arena, operand, d_inner);
+        }
+        return arena.alloc<NumberNode>(0.0);
+    }
+    
     NodePtr Simplify(Arena& arena) const override {
         auto simple_inner = operand->Simplify(arena);
         return arena.alloc<UnaryOpNode>(func, simple_inner);
@@ -536,15 +572,17 @@ struct MultiArgFunctionNode : ExprNode {
     
     MultiArgFunctionNode(std::string_view f, std::vector<NodePtr> arguments) 
         : func(f), args(std::move(arguments)) {}
+        
+    NodeType GetType() const override { return NodeType::MultiArgFunction; }
     
-    EvalResult Evaluate(const std::map<std::string, AXIOM::Number>& vars) const override {
+    EvalResult Evaluate(const StringUnorderedMap<AXIOM::Number>& vars) const override {
         if (func == "limit") {
             if (args.size() != 3) return EvalResult::Failure(CalcErr::ArgumentMismatch);
             
             // limit(expression, variable, point)
             // Use epsilon-delta numerical limit calculation
-            auto var_node = dynamic_cast<VariableNode*>(args[1]);
-            if (!var_node) return EvalResult::Failure(CalcErr::ArgumentMismatch);
+            if (args[1]->GetType() != NodeType::Variable) return EvalResult::Failure(CalcErr::ArgumentMismatch);
+            auto var_node = static_cast<VariableNode*>(args[1]);
             
             std::string var_name = std::string(var_node->name);
             auto point_result = args[2]->Evaluate(vars);
@@ -563,8 +601,8 @@ struct MultiArgFunctionNode : ExprNode {
             if (args.size() != 4) return EvalResult::Failure(CalcErr::ArgumentMismatch);
             
             // integrate(expression, variable, lower_bound, upper_bound)
-            auto var_node = dynamic_cast<VariableNode*>(args[1]);
-            if (!var_node) return EvalResult::Failure(CalcErr::ArgumentMismatch);
+            if (args[1]->GetType() != NodeType::Variable) return EvalResult::Failure(CalcErr::ArgumentMismatch);
+            auto var_node = static_cast<VariableNode*>(args[1]);
             
             std::string var_name = std::string(var_node->name);
             auto lower_result = args[2]->Evaluate(vars);
@@ -670,17 +708,19 @@ struct MultiArgFunctionNode : ExprNode {
     NodePtr Derivative(Arena& arena, std::string_view var) const override {
         // Fundamental Theorem of Calculus for integrals
         if (func == "integrate" && args.size() == 4) {
-            auto var_node = dynamic_cast<VariableNode*>(args[1]);
-            if (var_node && var_node->name == var) {
-                // d/dx ∫[a(x)]^[b(x)] f(t) dt = f(b(x))·b'(x) - f(a(x))·a'(x)
-                auto f_at_b = args[0]; // Need to substitute var with upper bound
-                auto f_at_a = args[0]; // Need to substitute var with lower bound
-                auto b_prime = args[3]->Derivative(arena, var);
-                auto a_prime = args[2]->Derivative(arena, var);
-                
-                // This is a simplified implementation
-                // In practice, we'd need proper substitution
-                return arena.alloc<NumberNode>(0.0); // Placeholder
+            if (args[1]->GetType() == NodeType::Variable) {
+                auto var_node = static_cast<VariableNode*>(args[1]);
+                if (var_node->name == var) {
+                    // d/dx âˆ«[a(x)]^[b(x)] f(t) dt = f(b(x))Â·b'(x) - f(a(x))Â·a'(x)
+                    auto f_at_b = args[0]; // Need to substitute var with upper bound
+                    auto f_at_a = args[0]; // Need to substitute var with lower bound
+                    auto b_prime = args[3]->Derivative(arena, var);
+                    auto a_prime = args[2]->Derivative(arena, var);
+                    
+                    // This is a simplified implementation
+                    // In practice, we'd need proper substitution
+                    return arena.alloc<NumberNode>(0.0); // Placeholder
+                }
             }
         }
         
@@ -690,8 +730,9 @@ struct MultiArgFunctionNode : ExprNode {
     
     NodePtr Simplify(Arena& arena) const override {
         std::vector<NodePtr> simplified_args;
+        simplified_args.reserve(args.size());
         for (const auto& arg : args) {
-            simplified_args.push_back(arg->Simplify(arena));
+            simplified_args.emplace_back(arg->Simplify(arena));
         }
         return arena.alloc<MultiArgFunctionNode>(func, std::move(simplified_args));
     }
@@ -707,14 +748,21 @@ struct MultiArgFunctionNode : ExprNode {
     }
 
 private:
-    EvalResult EvaluateNumericalLimit(const std::map<std::string, AXIOM::Number>& vars, 
+    EvalResult EvaluateNumericalLimit(const StringUnorderedMap<AXIOM::Number>& vars, 
                                     const std::string& var_name, double approach_point) const {
         constexpr double epsilon = 1e-6;  // Relaxed tolerance
         constexpr int max_iterations = 20; // Reduced iterations for faster convergence
         
+        // Cache the variable map to prevent continuous hashing inside the iteration loop
+        StringUnorderedMap<AXIOM::Number> local_vars = vars;
+        
+        // Insert a dummy value initially to ensure the hash bucket is allocated before looping
+        local_vars[var_name] = AXIOM::Number(approach_point);
+        // Take a direct reference to the bucket's value payload to bypass string lookups
+        AXIOM::Number& cached_var = local_vars[var_name];
+        
         auto evaluate_at = [&](double x) -> std::optional<double> {
-            std::map<std::string, AXIOM::Number> local_vars = vars;
-            local_vars[var_name] = AXIOM::Number(x);
+            cached_var = AXIOM::Number(x); // O(1) in-place memory mutation (No hashing or strings)
             auto result = args[0]->Evaluate(local_vars);
             return result.HasValue() ? std::optional<double>(AXIOM::GetReal(*result.value)) : std::nullopt;
         };
@@ -758,13 +806,17 @@ private:
         return EvalResult::Failure(CalcErr::IndeterminateResult);
     }
     
-    EvalResult EvaluateLimitAtInfinity(const std::map<std::string, AXIOM::Number>& vars,
+    EvalResult EvaluateLimitAtInfinity(const StringUnorderedMap<AXIOM::Number>& vars,
                                      const std::string& var_name, bool positive_infinity) const {
         constexpr int max_iterations = 20;
         
+        // Cache map buckets to skip string hashes
+        StringUnorderedMap<AXIOM::Number> local_vars = vars;
+        local_vars[var_name] = AXIOM::Number(0.0);
+        AXIOM::Number& cached_var = local_vars[var_name];
+        
         auto evaluate_at = [&](double x) -> std::optional<double> {
-            std::map<std::string, AXIOM::Number> local_vars = vars;
-            local_vars[var_name] = AXIOM::Number(x);
+            cached_var = AXIOM::Number(x);
             auto result = args[0]->Evaluate(local_vars);
             return result.HasValue() ? std::optional<double>(AXIOM::GetReal(*result.value)) : std::nullopt;
         };
@@ -801,15 +853,19 @@ private:
         return EvalResult::Failure(CalcErr::IndeterminateResult);
     }
     
-    EvalResult EvaluateNumericalIntegral(const std::map<std::string, AXIOM::Number>& vars,
+    EvalResult EvaluateNumericalIntegral(const StringUnorderedMap<AXIOM::Number>& vars,
                                        const std::string& var_name, double a, double b) const {
         // Adaptive Simpson's Rule with error control
         constexpr double tolerance = 1e-12;
         constexpr int max_recursion = 15;
         
+        // Optimization: O(1) bucket cache bypassing string hashing in innermost loop (thousands of hits per integral)
+        StringUnorderedMap<AXIOM::Number> local_vars = vars;
+        local_vars[var_name] = AXIOM::Number(a); 
+        AXIOM::Number& cached_var = local_vars[var_name];
+        
         auto f = [&](double x) -> double {
-            std::map<std::string, AXIOM::Number> local_vars = vars;
-            local_vars[var_name] = AXIOM::Number(x);
+            cached_var = AXIOM::Number(x); // Direct reference write
             auto result = args[0]->Evaluate(local_vars);
             return result.HasValue() ? AXIOM::GetReal(*result.value) : 0.0;
         };
@@ -846,15 +902,12 @@ private:
             double result = simpson_adaptive(a, b, fa, fb, fc, 0);
             return EvalResult::Success(result);
             
-        } catch (const std::exception& e) {
-            // Log domain error for mathematical operations
-            return EvalResult::Failure(CalcErr::DomainError);
-        } catch (...) {
+        } catch (const std::domain_error&) {
             return EvalResult::Failure(CalcErr::DomainError);
         }
     }
     
-    EvalResult EvaluateImproperIntegral(const std::map<std::string, AXIOM::Number>& vars,
+    EvalResult EvaluateImproperIntegral(const StringUnorderedMap<AXIOM::Number>& vars,
                                       const std::string& var_name, double a, double b) const {
         // Handle improper integrals by taking limits
         constexpr double large_val = 1e6;
@@ -873,14 +926,39 @@ private:
 AlgebraicParser::AlgebraicParser() { RegisterSpecialCommands(); }
 
 void AlgebraicParser::RegisterSpecialCommands() {
-    special_commands_.push_back({"quadratic", [this](const std::string& s){ return HandleQuadratic(s); }});
-    special_commands_.push_back({"solve_nl", [this](const std::string& s){ return HandleNonLinearSolve(s); }});
-    special_commands_.push_back({"derive", [this](const std::string& s){ return HandleDerivative(s); }});
+    special_commands_.emplace_back("quadratic", [this](const std::string& s){ return HandleQuadratic(s); });
+    special_commands_.emplace_back("solve_nl",  [this](const std::string& s){ return HandleNonLinearSolve(s); });
+    special_commands_.emplace_back("derive",    [this](const std::string& s){ return HandleDerivative(s); });
 }
 
+// helper used by multiple parsing locations to split comma-separated arguments
+// accepts a parsing function so it can recursively call into the current parser instance
+static std::vector<NodePtr> SplitArgsWithParen(std::string_view args_str,
+                                               const std::function<NodePtr(std::string_view)>& parse) {
+    std::vector<NodePtr> args;
+    size_t start = 0;
+    int paren_depth = 0;
+    for (size_t i = 0; i <= args_str.size(); ++i) {
+        char c = (i < args_str.size()) ? args_str[i] : ','; // end treat as comma
+        if (c == '(') paren_depth++;
+        else if (c == ')') paren_depth--;
+        else if (c == ',' && paren_depth == 0) {
+            auto arg_str = std::string_view(args_str).substr(start, i - start);
+            while (!arg_str.empty() && std::isspace(static_cast<unsigned char>(arg_str.front()))) arg_str.remove_prefix(1);
+            while (!arg_str.empty() && std::isspace(static_cast<unsigned char>(arg_str.back()))) arg_str.remove_suffix(1);
+            if (!arg_str.empty()) {
+                args.push_back(parse(arg_str));
+            }
+            start = i + 1;
+        }
+    }
+    return args;
+}
+
+
 NodePtr AlgebraicParser::ParseExpression(std::string_view input) {
-    while (!input.empty() && std::isspace(static_cast<unsigned char>(input.front()))) input.remove_prefix(1);
-    while (!input.empty() && std::isspace(static_cast<unsigned char>(input.back()))) input.remove_suffix(1);
+    std::string trimmed = Utils::Trim(input);
+    input = trimmed; // work on trimmed copy as string_view
 
     auto parse_binary = [&](std::string_view operators, bool right_to_left) -> NodePtr {
         int bracket_depth = 0;
@@ -890,30 +968,32 @@ NodePtr AlgebraicParser::ParseExpression(std::string_view input) {
 
         for (int i = start; i != end; i += step) {
             char c = input[i];
-            if (c == ')') bracket_depth++;
-            else if (c == '(') bracket_depth--;
-            else if (bracket_depth == 0) {
-                if (operators.find(c) != std::string_view::npos) {
-                    // Check if this is actually a unary operator (specifically for +/-)
-                    if ((c == '-' || c == '+') && i == 0) {
-                        // This is a unary operator at the start of expression
-                        continue; // Skip this one for binary parsing
-                    }
-                    if ((c == '-' || c == '+') && i > 0) {
-                        // Check if previous character suggests this might be unary
-                        char prev = input[i-1];
-                        if (prev == '(' || prev == '+' || prev == '-' || prev == '*' || prev == '/' || prev == '^') {
-                            // This looks like a unary operator after another operator
-                            continue; // Skip for now
-                        }
-                    }
-                    
-                    // This is a binary operator
-                    return arena_.alloc<BinaryOpNode>(c, 
-                        ParseExpression(input.substr(0, i)), 
-                        ParseExpression(input.substr(i + 1)));
+            if (c == ')') {
+                bracket_depth++;
+                continue;
+            }
+            if (c == '(') {
+                bracket_depth--;
+                continue;
+            }
+            if (bracket_depth != 0) continue;
+
+            if (operators.find(c) == std::string_view::npos) continue;
+
+            // Check if this is actually a unary operator (specifically for +/-)
+            if ((c == '-' || c == '+') && i == 0) continue; // Skip unary at start
+
+            if ((c == '-' || c == '+') && i > 0) {
+                char prev = input[i-1];
+                if (prev == '(' || prev == '+' || prev == '-' || prev == '*' || prev == '/' || prev == '^') {
+                    continue; // Skip unary after operator
                 }
             }
+            
+            // This is a binary operator
+            return arena_.alloc<BinaryOpNode>(c, 
+                ParseExpression(input.substr(0, i)), 
+                ParseExpression(input.substr(i + 1)));
         }
         return nullptr;
     };
@@ -940,18 +1020,25 @@ NodePtr AlgebraicParser::ParseExpression(std::string_view input) {
             char curr = input[i];
             char next = input[i+1];
             if (curr == '(') bracket_depth++;
-            if (curr == ')') bracket_depth--;
-            if (bracket_depth == 0) {
-                bool digit_alpha = std::isdigit(static_cast<unsigned char>(curr)) && std::isalpha(static_cast<unsigned char>(next));
-                bool digit_paren = std::isdigit(static_cast<unsigned char>(curr)) && next == '(';
-                bool paren_alpha = (curr == ')') && std::isalpha(static_cast<unsigned char>(next));
-                bool paren_paren = (curr == ')') && next == '(';
-                
-                if (digit_alpha || digit_paren || paren_alpha || paren_paren) {
-                    return arena_.alloc<BinaryOpNode>('*', 
-                            ParseExpression(input.substr(0, i + 1)), 
-                            ParseExpression(input.substr(i + 1)));
-                }
+            else if (curr == ')') bracket_depth--;
+            
+            if (bracket_depth != 0) continue;
+
+            bool digit_alpha = std::isdigit(static_cast<unsigned char>(curr)) && std::isalpha(static_cast<unsigned char>(next));
+            bool prev_is_ident = false;
+            if (i > 0) {
+                unsigned char prev = static_cast<unsigned char>(input[i - 1]);
+                prev_is_ident = std::isalnum(prev) || prev == '_';
+            }
+            // Treat N( ... ) as implicit multiplication, but avoid splitting function names like log2(...).
+            bool digit_paren = std::isdigit(static_cast<unsigned char>(curr)) && next == '(' && !prev_is_ident;
+            bool paren_alpha = (curr == ')') && std::isalpha(static_cast<unsigned char>(next));
+            bool paren_paren = (curr == ')') && next == '(';
+            
+            if (digit_alpha || digit_paren || paren_alpha || paren_paren) {
+                return arena_.alloc<BinaryOpNode>('*', 
+                        ParseExpression(input.substr(0, i + 1)), 
+                        ParseExpression(input.substr(i + 1)));
             }
         }
     }
@@ -972,30 +1059,7 @@ NodePtr AlgebraicParser::ParseExpression(std::string_view input) {
         if (func_name == "limit" || func_name == "integrate" || func_name == "plot" || 
             func_name == "max" || func_name == "min" || func_name == "gcd" || 
             func_name == "lcm" || func_name == "mod" || func_name == "modulo") {
-            std::vector<NodePtr> args;
-            
-            // Parse comma-separated arguments
-            size_t start = 0;
-            int paren_depth = 0;
-            
-            for (size_t i = 0; i <= args_str.size(); ++i) {
-                char c = (i < args_str.size()) ? args_str[i] : ','; // Treat end as comma
-                
-                if (c == '(') paren_depth++;
-                else if (c == ')') paren_depth--;
-                else if (c == ',' && paren_depth == 0) {
-                    // Found argument boundary
-                    auto arg_str = args_str.substr(start, i - start);
-                    while (!arg_str.empty() && std::isspace(static_cast<unsigned char>(arg_str.front()))) arg_str.remove_prefix(1);
-                    while (!arg_str.empty() && std::isspace(static_cast<unsigned char>(arg_str.back()))) arg_str.remove_suffix(1);
-                    
-                    if (!arg_str.empty()) {
-                        args.push_back(ParseExpression(arg_str));
-                    }
-                    start = i + 1;
-                }
-            }
-            
+            auto args = SplitArgsWithParen(args_str, [this](std::string_view v){ return ParseExpression(v); });
             return arena_.alloc<MultiArgFunctionNode>(arena_.allocString(func_name), std::move(args));
         } else {
             // Single-argument function (existing behavior)
@@ -1023,7 +1087,7 @@ NodePtr AlgebraicParser::ParseExpression(std::string_view input) {
 }
 
 EngineResult AlgebraicParser::ParseAndExecute(const std::string& input) {
-    std::map<std::string, AXIOM::Number> empty_context;
+    StringUnorderedMap<AXIOM::Number> empty_context;
     return ParseAndExecuteWithContext(input, empty_context); 
 }
 
@@ -1031,25 +1095,21 @@ EngineResult AlgebraicParser::ParseAndExecute(const std::string& input) {
  * @brief Thread-safe expression parsing and execution with context
  * THREAD SAFETY: Uses shared_lock for cache reads, unique_lock for cache writes
  */
-EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& input, const std::map<std::string, AXIOM::Number>& context) {
+EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& input, const StringUnorderedMap<AXIOM::Number>& context) {
     // Basic syntax validation
-    std::string trimmed = input;
-    while (!trimmed.empty() && std::isspace(trimmed.front())) trimmed.erase(0, 1);
-    while (!trimmed.empty() && std::isspace(trimmed.back())) trimmed.pop_back();
-    
+    std::string trimmed = Utils::Trim(input);
     if (trimmed.empty()) {
-        return {{}, {EngineErrorResult(CalcErr::ParseError)}};
+        return CreateErrorResult(CalcErr::ParseError);
     }
     
     // THREAD SAFETY: Check cache with shared lock (concurrent reads allowed)
     {
         std::shared_lock<std::shared_mutex> read_lock(mutex_s);
-        auto cache_it = eval_cache_.find(trimmed);
-        if (cache_it != eval_cache_.end() && context.empty()) {
+        if (auto cache_it = eval_cache_.find(trimmed); cache_it != eval_cache_.end() && context.empty()) {
             const auto& cached = cache_it->second;
             if (cached.HasValue()) {
                 double val = AXIOM::GetReal(*cached.value);
-                return EngineSuccessResult(val);
+                return CreateSuccessResult(val);
             }
             EngineResult err_result;
             err_result.error = EngineErrorResult(cached.error);
@@ -1063,7 +1123,7 @@ EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& inpu
         char c2 = trimmed[i + 1];
         if ((c1 == '+' || c1 == '-' || c1 == '*' || c1 == '/') && 
             (c2 == '+' || c2 == '*' || c2 == '/')) {
-            return {{}, {EngineErrorResult(CalcErr::ParseError)}};
+            return CreateErrorResult(CalcErr::ParseError);
         }
     }
     
@@ -1073,15 +1133,15 @@ EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& inpu
         if (c == '(') paren_count++;
         else if (c == ')') paren_count--;
         if (paren_count < 0) {
-            return {{}, {EngineErrorResult(CalcErr::ParseError)}};
+            return CreateErrorResult(CalcErr::ParseError);
         }
     }
     if (paren_count != 0) {
-        return {{}, {EngineErrorResult(CalcErr::ParseError)}};
+        return CreateErrorResult(CalcErr::ParseError);
     }
     
     // Check for unknown functions (basic validation) - OPTIMIZED to avoid slowdown with many functions
-    static const std::set<std::string> known_functions = {
+    static const std::set<std::string, std::less<>> known_functions = {
         "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh",
         "asinh", "acosh", "atanh", "log", "ln", "log2", "exp", "sqrt", "cbrt",
         "abs", "factorial", "limit", "integrate", "max", "min", "gcd", "lcm",
@@ -1092,21 +1152,28 @@ EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& inpu
     // Optimized function validation - limit iterations for very long strings
     size_t pos = 0;
     int func_check_count = 0;
-    const int max_func_checks = 1000;  // Safety limit to prevent O(n²) behavior
+    const int max_func_checks = 1000;  // Safety limit to prevent O(nÂ²) behavior
     
     while ((pos = trimmed.find('(', pos)) != std::string::npos && func_check_count < max_func_checks) {
         func_check_count++;
         // Find the start of the potential function name
         size_t func_start = pos;
-        while (func_start > 0 && (std::isalpha(trimmed[func_start - 1]) || trimmed[func_start - 1] == '_')) {
+        while (func_start > 0 && (std::isalnum(static_cast<unsigned char>(trimmed[func_start - 1])) || trimmed[func_start - 1] == '_')) {
             func_start--;
         }
         
-        if (func_start < pos) {
-            std::string func_name = trimmed.substr(func_start, pos - func_start);
-            if (known_functions.find(func_name) == known_functions.end()) {
-                return {{}, {EngineErrorResult(CalcErr::ParseError)}};
-            }
+        if (func_start >= pos) {
+            pos++;
+            continue;
+        }
+
+        std::string func_name = trimmed.substr(func_start, pos - func_start);
+        // Only validate function-like identifiers here. Numeric tokens such as
+        // "2(...)" are handled later as implicit multiplication.
+        unsigned char first_char = static_cast<unsigned char>(func_name.front());
+        bool starts_like_identifier = std::isalpha(first_char) || first_char == '_';
+        if (starts_like_identifier && !known_functions.contains(func_name)) {
+            return CreateErrorResult(CalcErr::ParseError);
         }
         pos++;
     }
@@ -1130,7 +1197,7 @@ EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& inpu
         
         // THREAD SAFETY: Exclusive lock for writing to cache
         if (context.empty() && evaluation.HasValue()) {
-            std::lock_guard<std::shared_mutex> write_lock(mutex_s);
+            std::scoped_lock write_lock(mutex_s);
             
             // Limit cache size to prevent memory growth
             if (eval_cache_.size() >= MAX_CACHE_SIZE) {
@@ -1141,14 +1208,19 @@ EngineResult AlgebraicParser::ParseAndExecuteWithContext(const std::string& inpu
         
         if (evaluation.value.has_value()) {
             double result_val = AXIOM::GetReal(*evaluation.value);
-            return EngineSuccessResult(result_val);
+            return CreateSuccessResult(result_val);
         }
         CalcErr err = evaluation.error == CalcErr::None ? CalcErr::ArgumentMismatch : evaluation.error;
         EngineResult err_result;
         err_result.error = EngineErrorResult(err);
         return err_result;
     }
-    catch (const std::exception&) {
+    catch (const std::invalid_argument&) {
+        EngineResult err_result;
+        err_result.error = EngineErrorResult(CalcErr::ParseError);
+        return err_result;
+    }
+    catch (const std::domain_error&) {
         EngineResult err_result;
         err_result.error = EngineErrorResult(CalcErr::ArgumentMismatch);
         return err_result;
@@ -1160,19 +1232,19 @@ EngineResult AlgebraicParser::HandleQuadratic(const std::string& input) {
     std::string cmd;
     double a, b, c;
     ss >> cmd;
-    if (!(ss >> a >> b >> c)) return {{}, {EngineErrorResult(CalcErr::ArgumentMismatch)}};
+    if (!(ss >> a >> b >> c)) return CreateErrorResult(CalcErr::ArgumentMismatch);
     return SolveQuadratic(a, b, c);
 }
 
 EngineResult AlgebraicParser::HandleNonLinearSolve(const std::string& input) {
     auto open_brace = input.find('{');
     auto close_brace = input.find('}');
-    if (open_brace == std::string::npos || close_brace == std::string::npos) return {{}, EngineErrorResult(CalcErr::ArgumentMismatch)};
+    if (open_brace == std::string::npos || close_brace == std::string::npos) return CreateErrorResult(CalcErr::ArgumentMismatch);
     std::string eq_content = input.substr(open_brace + 1, close_brace - open_brace - 1);
     
     auto open_bracket = input.find('[', close_brace);
     auto close_bracket = input.find(']', open_bracket);
-    if (open_bracket == std::string::npos || close_bracket == std::string::npos) return {{}, EngineErrorResult(CalcErr::ArgumentMismatch)};
+    if (open_bracket == std::string::npos || close_bracket == std::string::npos) return CreateErrorResult(CalcErr::ArgumentMismatch);
     std::string guess_content = input.substr(open_bracket + 1, close_bracket - open_bracket - 1);
 
     auto raw_eqs = Utils::Split(eq_content, ';'); 
@@ -1186,17 +1258,17 @@ EngineResult AlgebraicParser::HandleNonLinearSolve(const std::string& input) {
             std::string rhs = eq.substr(eq_sign_pos + 1);
             eq = "(" + lhs + ") - (" + rhs + ")";
         }
-        final_equations.push_back(eq);
+        final_equations.emplace_back(eq);
     }
 
     auto raw_guesses = Utils::Split(guess_content, ',');
     std::vector<double> guess_values;
     for (const auto& val_str : raw_guesses) {
         std::string trimmed = Utils::Trim(val_str);
-        if(Utils::IsNumber(trimmed)) guess_values.push_back(std::stod(trimmed));
+        if(Utils::IsNumber(trimmed)) guess_values.emplace_back(std::stod(trimmed));
     }
 
-    std::map<std::string, double> guess_map;
+    StringUnorderedMap<double> guess_map;
     std::vector<std::string> var_names = {"x", "y", "z", "a", "b", "c"};
     for(size_t i=0; i<guess_values.size(); ++i) {
         if(i < var_names.size()) guess_map[var_names[i]] = guess_values[i];
@@ -1217,12 +1289,8 @@ EngineResult AlgebraicParser::HandleDerivative(const std::string& input) {
         NodePtr root = ParseExpression(expression);
         NodePtr derivative = root->Derivative(arena_, var);
         NodePtr simplified = derivative->Simplify(arena_)->Simplify(arena_);
-        return EngineSuccessResult(simplified->ToString(Precedence::None)); 
-    } catch (const std::exception& e) {
-        EngineResult err_result;
-        err_result.error = EngineErrorResult(CalcErr::ParseError);
-        return err_result;
-    } catch (...) {
+        return CreateSuccessResult(simplified->ToString(Precedence::None)); 
+    } catch (const std::invalid_argument&) {
         EngineResult err_result;
         err_result.error = EngineErrorResult(CalcErr::ParseError);
         return err_result;
@@ -1242,20 +1310,20 @@ EngineResult AlgebraicParser::SolveQuadratic(double a, double b, double c) {
         return err_result;
     }
     double s = std::sqrt(d);
-    return EngineSuccessResult(Vector({(-b + s) / (2 * a), (-b - s) / (2 * a)}));
+    return CreateSuccessResult(Vector({(-b + s) / (2 * a), (-b - s) / (2 * a)}));
 }
 
-EngineResult AlgebraicParser::SolveNonLinearSystem(const std::vector<std::string>& equation_strs, std::map<std::string, double>& guess) {
+EngineResult AlgebraicParser::SolveNonLinearSystem(const std::vector<std::string>& equation_strs, StringUnorderedMap<double>& guess) {
     const int max_iter = 50;
     const double epsilon = 1e-5;
     std::vector<NodePtr> roots;
-    for(const auto& eq : equation_strs) roots.push_back(ParseExpression(eq));
+    for(const auto& eq : equation_strs) roots.emplace_back(ParseExpression(eq));
     std::vector<std::string> var_names;
-    for(auto const& [key, val] : guess) var_names.push_back(key);
+    for(auto const& [key, val] : guess) var_names.emplace_back(key);
     int n = var_names.size();
     
     // Convert guess to AXIOM::Number context
-    std::map<std::string, AXIOM::Number> num_guess;
+    StringUnorderedMap<AXIOM::Number> num_guess;
     for(const auto& [key, val] : guess) {
         num_guess[key] = AXIOM::Number(val);
     }
@@ -1265,7 +1333,7 @@ EngineResult AlgebraicParser::SolveNonLinearSystem(const std::vector<std::string
         for(int i=0; i<n; ++i) {
             auto eval = roots[i]->Evaluate(num_guess);
             if (!eval.value.has_value()) {
-                return {{}, EngineErrorResult(NormalizeError(eval, CalcErr::DomainError))};
+                return CreateErrorResult(NormalizeError(eval, CalcErr::DomainError));
             }
             F[i] = AXIOM::GetReal(*eval.value);
         }
@@ -1279,7 +1347,7 @@ EngineResult AlgebraicParser::SolveNonLinearSystem(const std::vector<std::string
             for (int i = 0; i < n; ++i) {
                 auto eval = roots[i]->Evaluate(num_guess);
                 if (!eval.value.has_value()) {
-                    return {{}, EngineErrorResult(NormalizeError(eval, CalcErr::DomainError))};
+                    return CreateErrorResult(NormalizeError(eval, CalcErr::DomainError));
                 }
                 J[i][j] = (AXIOM::GetReal(*eval.value) - F[i]) / epsilon;
             }
@@ -1296,11 +1364,10 @@ EngineResult AlgebraicParser::SolveNonLinearSystem(const std::vector<std::string
                 for (int j=i; j<n; ++j) A[i][j] /= div;
                 b[i] /= div;
                 for (int k=0; k<n; ++k) {
-                    if (k != i) {
-                        double factor = A[k][i];
-                        for (int j=i; j<n; ++j) A[k][j] -= factor * A[i][j];
-                        b[k] -= factor * b[i];
-                    }
+                    if (k == i) continue;
+                    double factor = A[k][i];
+                    for (int j=i; j<n; ++j) A[k][j] -= factor * A[i][j];
+                    b[k] -= factor * b[i];
                 }
             }
             return b;
@@ -1312,8 +1379,8 @@ EngineResult AlgebraicParser::SolveNonLinearSystem(const std::vector<std::string
         }
     }
     std::vector<double> res;
-    for(auto& name : var_names) res.push_back(AXIOM::GetReal(num_guess[name]));
-    return EngineSuccessResult(res);
+    for(auto& name : var_names) res.emplace_back(AXIOM::GetReal(num_guess[name]));
+    return CreateSuccessResult(res);
 }
 
 EngineResult AlgebraicParser::HandlePlotFunction(const std::string& input) {
@@ -1322,7 +1389,7 @@ EngineResult AlgebraicParser::HandlePlotFunction(const std::string& input) {
     size_t paren_end = input.rfind(')');
     
     if (paren_start == std::string::npos || paren_end == std::string::npos) {
-        return {{}, {EngineErrorResult(CalcErr::ArgumentMismatch)}};
+        return CreateErrorResult(CalcErr::ArgumentMismatch);
     }
     
     std::string args_str = input.substr(paren_start + 1, paren_end - paren_start - 1);
@@ -1338,7 +1405,7 @@ EngineResult AlgebraicParser::HandlePlotFunction(const std::string& input) {
         if (c == '(') paren_depth++;
         else if (c == ')') paren_depth--;
         else if (c == ',' && paren_depth == 0) {
-            std::string arg = Utils::Trim(args_str.substr(start, i - start));
+            std::string arg = Utils::Trim(std::string_view(args_str).substr(start, i - start));
             if (!arg.empty()) {
                 args.push_back(arg);
             }
@@ -1355,5 +1422,7 @@ EngineResult AlgebraicParser::HandlePlotFunction(const std::string& input) {
     // For now, return a special string result to indicate this is a plot command
     // The actual plotting will be handled by the CalcEngine
     std::string plot_command = "PLOT_FUNCTION:" + args[0] + "," + args[1] + "," + args[2] + "," + args[3] + "," + args[4];
-    return EngineSuccessResult(plot_command);
+    return CreateSuccessResult(std::move(plot_command));
 }
+
+} // namespace AXIOM

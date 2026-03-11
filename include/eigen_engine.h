@@ -6,6 +6,8 @@
  * computations with SIMD optimizations and memory efficiency.
  */
 
+#pragma once
+
 #ifndef EIGEN_ENGINE_H
 #define EIGEN_ENGINE_H
 
@@ -19,6 +21,7 @@
 #include <memory>
 #include <functional>
 #include <chrono>
+#include <thread>
 
 namespace AXIOM {
 
@@ -65,47 +68,47 @@ public:
     void SetNumThreads(int num_threads = -1); // -1 for auto
 
     // Matrix Operations (🏎️ Senna Speed with Eigen!)
-    Matrix CreateMatrix(const std::vector<std::vector<double>>& data);
-    Vector CreateVector(const std::vector<double>& data);
+    Matrix CreateMatrix(const std::vector<std::vector<double>>& data) const;
+    Vector CreateVector(const std::vector<double>& data) const;
     
     // High-performance linear algebra
-    Matrix MatrixMultiply(const Matrix& A, const Matrix& B);
-    Vector MatrixVectorMultiply(const Matrix& A, const Vector& x);
-    Matrix MatrixAdd(const Matrix& A, const Matrix& B);
-    Matrix MatrixSubtract(const Matrix& A, const Matrix& B);
+    Matrix MatrixMultiply(const Matrix& A, const Matrix& B) const;
+    Vector MatrixVectorMultiply(const Matrix& A, const Vector& x) const;
+    Matrix MatrixAdd(const Matrix& A, const Matrix& B) const;
+    Matrix MatrixSubtract(const Matrix& A, const Matrix& B) const;
     
     // Advanced operations
-    double Determinant(const Matrix& A);
-    Matrix Inverse(const Matrix& A);
-    Matrix Transpose(const Matrix& A);
-    Matrix PseudoInverse(const Matrix& A);
+    double Determinant(const Matrix& A) const;
+    Matrix Inverse(const Matrix& A) const;
+    Matrix Transpose(const Matrix& A) const;
+    Matrix PseudoInverse(const Matrix& A) const;
     
     // Eigenvalue/Eigenvector computations
-    std::pair<Vector, Matrix> EigenDecomposition(const Matrix& A);
-    std::tuple<Matrix, Vector, Matrix> SVD(const Matrix& A);
+    std::pair<Vector, Matrix> EigenDecomposition(const Matrix& A) const;
+    std::tuple<Matrix, Vector, Matrix> SVD(const Matrix& A) const;
     
     // System solving (ultra-fast)
-    Vector SolveLinearSystem(const Matrix& A, const Vector& b);
-    Matrix SolveMultipleRHS(const Matrix& A, const Matrix& B);
+    Vector SolveLinearSystem(const Matrix& A, const Vector& b) const;
+    Matrix SolveMultipleRHS(const Matrix& A, const Matrix& B) const;
     
     // Specialized mathematical functions
-    Matrix MatrixExponential(const Matrix& A);
-    Matrix MatrixLogarithm(const Matrix& A);
-    Matrix MatrixPower(const Matrix& A, double power);
+    Matrix MatrixExponential(const Matrix& A) const;
+    Matrix MatrixLogarithm(const Matrix& A) const;
+    Matrix MatrixPower(const Matrix& A, double power) const;
     
     // Signal processing operations
-    Vector FFT(const Vector& signal);
-    Vector IFFT(const Vector& spectrum);
-    Vector Convolution(const Vector& signal1, const Vector& signal2);
-    Vector CrossCorrelation(const Vector& signal1, const Vector& signal2);
+    Vector FFT(const Vector& signal) const;
+    Vector IFFT(const Vector& spectrum) const;
+    Vector Convolution(const Vector& signal1, const Vector& signal2) const;
+    Vector CrossCorrelation(const Vector& signal1, const Vector& signal2) const;
     
     // Statistical operations (vectorized)
-    double Mean(const Vector& data);
-    double StandardDeviation(const Vector& data);
-    double Variance(const Vector& data);
-    Vector Normalize(const Vector& data);
-    Matrix Covariance(const Matrix& data);
-    Vector PolynomialFit(const Vector& x, const Vector& y, int degree);
+    double Mean(const Vector& data) const;
+    double StandardDeviation(const Vector& data) const;
+    double Variance(const Vector& data) const;
+    Vector Normalize(const Vector& data) const;
+    Matrix Covariance(const Matrix& data) const;
+    Vector PolynomialFit(const Vector& x, const Vector& y, int degree) const;
     
     // Advanced calculus (numerical)
     Vector Gradient(const std::function<double(const Vector&)>& func, const Vector& x);
@@ -134,15 +137,19 @@ public:
     void SaveMatrix(const Matrix& mat, const std::string& filename);
 
 private:
-    CPUOptimizationLevel optimization_level_;
-    bool simd_enabled_;
-    int num_threads_;
+    CPUOptimizationLevel optimization_level_{CPUOptimizationLevel::SIMD};
+    bool simd_enabled_{true};
+    int num_threads_{static_cast<int>(std::thread::hardware_concurrency())};
     // THREAD-SAFETY FIX: mutable allows modification in const methods without const_cast
     mutable CPUPerformanceMetrics last_metrics_;
     
     // Internal cache for performance
-    mutable std::unordered_map<std::string, Matrix> matrix_cache_;
-    mutable std::unordered_map<std::string, Vector> vector_cache_;
+    struct StringHash {
+        using is_transparent = void;
+        size_t operator()(std::string_view sv) const { return std::hash<std::string_view>{}(sv); }
+    };
+    mutable std::unordered_map<std::string, Matrix, StringHash, std::equal_to<>> matrix_cache_;
+    mutable std::unordered_map<std::string, Vector, StringHash, std::equal_to<>> vector_cache_;
     
     // Performance helpers
     template<typename Func>
@@ -169,14 +176,14 @@ private:
  */
 class PerformanceTimer {
 public:
-    PerformanceTimer(const std::string& operation_name);
+    explicit PerformanceTimer(const std::string& operation_name);
     ~PerformanceTimer();
     
     double GetElapsedMs() const;
     
 private:
     std::string operation_name_;
-    std::chrono::high_resolution_clock::time_point start_time_;
+    std::chrono::high_resolution_clock::time_point start_time_{std::chrono::high_resolution_clock::now()};
 };
 
 // Convenience macros for performance measurement (disabled for maximum speed)

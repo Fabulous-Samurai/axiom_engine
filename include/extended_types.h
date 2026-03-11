@@ -9,6 +9,19 @@
 
 namespace AXIOM {
 
+inline std::string mode_to_string(CalculationMode mode) {
+    switch (mode) {
+        case CalculationMode::ALGEBRAIC:     return "algebraic";
+        case CalculationMode::LINEAR_SYSTEM: return "linear";
+        case CalculationMode::STATISTICS:    return "statistics";
+        case CalculationMode::SYMBOLIC:      return "symbolic";
+        case CalculationMode::UNITS:         return "units";
+        case CalculationMode::PLOT:          return "plot";
+        case CalculationMode::PYTHON:        return "python";
+        default:                             return "unknown";
+    }
+}
+
 /**
  * @brief Extended result structure for enterprise features
  */

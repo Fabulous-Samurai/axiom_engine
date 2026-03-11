@@ -1,226 +1,102 @@
-/**
- * @file benchmark_suite.cpp
- * @brief Zero-overhead benchmark suite for AXIOM v3.1 Engine validation.
- * * Validates:
- * 1. Static Polymorphism (std::visit) throughput.
- * 2. Move Semantics (Zero-copy) on Vectors/Matrices.
- * 3. SPSC Lock-Free Queue IPC latency.
- */
 
 #include "../include/dynamic_calc.h"
 #include "../include/daemon_engine.h"
-#include <iostream>
-#include <chrono>
+#include "../include/mantis_heuristic.h"
+#include "../include/mantis_solver.h"
+#include <benchmark/benchmark.h>
 #include <vector>
-#include <iomanip>
-#include <fstream>
-#include <string>
+#include <thread>
 
 using namespace AXIOM;
 
-struct BenchmarkResult
-{
-    std::string name;
-    size_t iterations = 0;
-    double elapsed_ms = 0.0;
-    double ops_per_sec = 0.0;
-    double latency_us = 0.0;
-};
-
-// High-resolution timer utility for accurate sub-millisecond profiling.
-class Profiler
-{
-    std::chrono::high_resolution_clock::time_point start_;
-
-public:
-    void start() { start_ = std::chrono::high_resolution_clock::now(); }
-    double get_elapsed_ms() const
-    {
-        auto end = std::chrono::high_resolution_clock::now();
-        return std::chrono::duration<double, std::milli>(end - start_).count();
+static void BM_ScalarThroughput(benchmark::State& state) {
+    DynamicCalc engine;
+    engine.SetMode(CalculationMode::ALGEBRAIC);
+    for (auto _ : state) {
+        auto res = engine.Evaluate("2+2");
+        benchmark::DoNotOptimize(res);
     }
-};
-
-BenchmarkResult RunScalarThroughputTest(DynamicCalc &engine, size_t iterations)
-{
-    Profiler profiler;
-    profiler.start();
-
-    // Benchmarking vtable miss elimination (Static Dispatch)
-    for (size_t i = 0; i < iterations; ++i)
-    {
-        // Assume "2+2" hits the AlgebraicParser via std::visit
-        volatile auto res = engine.Evaluate("2+2");
-    }
-
-    double ms = profiler.get_elapsed_ms();
-    BenchmarkResult result{"scalar_throughput", iterations, ms, (iterations / ms) * 1000.0, (ms * 1000.0) / static_cast<double>(iterations)};
-    std::cout << "[Test 1] Scalar Throughput (" << iterations << " ops): "
-              << result.elapsed_ms << " ms (" << result.ops_per_sec << " ops/sec)\n";
-    return result;
 }
+BENCHMARK(BM_ScalarThroughput);
 
-BenchmarkResult RunTypedFastPathTest(DynamicCalc &engine, size_t iterations)
-{
-    Profiler profiler;
-    profiler.start();
-
-    volatile double sink = 0.0;
-    for (size_t i = 0; i < iterations; ++i)
-    {
+static void BM_TypedFastPath(benchmark::State& state) {
+    DynamicCalc engine;
+    double sink = 0.0;
+    int i = 0;
+    for (auto _ : state) {
         const double lhs = static_cast<double>(i);
         const double rhs = static_cast<double>((i % 97) + 1);
         const auto result = engine.EvaluateFast(lhs, rhs, FastArithmeticOp::Multiply);
-        if (result.HasResult())
-        {
-            auto val = result.GetDouble();
-            if (val.has_value())
-            {
+        if (result.HasResult()) {
+            if (auto val = result.GetDouble()) {
                 sink += *val;
             }
         }
+        i++;
     }
-
-    double ms = profiler.get_elapsed_ms();
-    BenchmarkResult result{"typed_fast_path", iterations, ms, (iterations / ms) * 1000.0, (ms * 1000.0) / static_cast<double>(iterations)};
-    std::cout << "[Test 1b] Typed Fast-Path Throughput (" << iterations << " ops): "
-              << result.elapsed_ms << " ms (" << result.ops_per_sec << " ops/sec)\n";
-
-    if (sink < 0)
-    {
-        std::cout << "";
-    }
-
-    return result;
+    benchmark::DoNotOptimize(sink);
 }
+BENCHMARK(BM_TypedFastPath);
 
-BenchmarkResult RunZeroCopyVectorTest(size_t vector_size, size_t iterations)
-{
-    Profiler profiler;
-    profiler.start();
-
-    for (size_t i = 0; i < iterations; ++i)
-    {
+static void BM_ZeroCopyVector(benchmark::State& state) {
+    size_t vector_size = state.range(0);
+    for (auto _ : state) {
         std::vector<double> large_vec(vector_size, 1.0);
-        // Benchmarking Rvalue reference transfer. No heap allocation should occur here.
-        EngineResult res = CreateSuccessResult(std::move(large_vec));
-        volatile bool ready = res.HasResult();
+        auto res = CreateSuccessResult(std::move(large_vec));
+        benchmark::DoNotOptimize(res);
     }
-
-    double ms = profiler.get_elapsed_ms();
-    BenchmarkResult result{"zero_copy_vector_transfer", iterations, ms, (iterations / ms) * 1000.0, (ms * 1000.0) / static_cast<double>(iterations)};
-    std::cout << "[Test 2] Zero-Copy Vector Transfer (" << vector_size << " elements, "
-              << iterations << " iters): " << result.elapsed_ms << " ms\n";
-    return result;
 }
+BENCHMARK(BM_ZeroCopyVector)->RangeMultiplier(2)->Range(1024, 8192);
 
-BenchmarkResult RunLockFreeQueueLatencyTest(size_t iterations)
-{
+static void BM_LockFreeQueueIPC(benchmark::State& state) {
     LockFreeRingBuffer<DaemonEngine::Request, 1024> queue;
-    Profiler profiler;
-    profiler.start();
-
-    for (size_t i = 0; i < iterations; ++i)
-    {
+    int i = 0;
+    for (auto _ : state) {
         DaemonEngine::Request req;
-        req.request_id = i;
+        req.request_id = i++;
         req.command = "benchmark_cmd";
-
-        // Push Lvalue (moves internally if std::move is used in call)
-        while (!queue.push(std::move(req)))
-        {
-        }
+        while (!queue.push(req)) std::this_thread::yield();
 
         DaemonEngine::Request popped_req;
-        while (!queue.pop(popped_req))
-        {
-        }
-    }
-
-    double ms = profiler.get_elapsed_ms();
-    BenchmarkResult result{"lock_free_queue_ipc", iterations, ms, (iterations / ms) * 1000.0, (ms * 1000.0) / static_cast<double>(iterations)};
-    std::cout << "[Test 3] Lock-Free Queue IPC Latency (" << iterations << " cycles): "
-              << result.elapsed_ms << " ms (" << result.latency_us << " microseconds/cycle)\n";
-    return result;
-}
-
-void WriteBenchmarkCsv(const std::vector<BenchmarkResult> &results, const std::string &path)
-{
-    std::ofstream out(path, std::ios::trunc);
-    if (!out.is_open())
-    {
-        std::cerr << "[WARN] Could not write CSV benchmark report: " << path << "\n";
-        return;
-    }
-
-    out << "name,iterations,elapsed_ms,ops_per_sec,latency_us\n";
-    for (const auto &r : results)
-    {
-        out << r.name << ","
-            << r.iterations << ","
-            << r.elapsed_ms << ","
-            << r.ops_per_sec << ","
-            << r.latency_us << "\n";
+        while (!queue.pop(popped_req)) std::this_thread::yield();
     }
 }
+BENCHMARK(BM_LockFreeQueueIPC);
 
-void WriteBenchmarkJson(const std::vector<BenchmarkResult> &results, const std::string &path)
-{
-    std::ofstream out(path, std::ios::trunc);
-    if (!out.is_open())
-    {
-        std::cerr << "[WARN] Could not write JSON benchmark report: " << path << "\n";
-        return;
+static AXIOM::Mantis::NodeFeatureVecF32 make_test_node_f32() {
+    AXIOM::Mantis::NodeFeatureVecF32 node;
+    for (size_t i = 0; i < AXIOM::Mantis::kFeatureDimFP32; ++i) {
+        node.data[i] = static_cast<float>(i + 1) * 0.1f;
     }
-
-    out << "{\n  \"benchmarks\": [\n";
-    for (size_t i = 0; i < results.size(); ++i)
-    {
-        const auto &r = results[i];
-        out << "    {\n"
-            << "      \"name\": \"" << r.name << "\",\n"
-            << "      \"iterations\": " << r.iterations << ",\n"
-            << "      \"elapsed_ms\": " << r.elapsed_ms << ",\n"
-            << "      \"ops_per_sec\": " << r.ops_per_sec << ",\n"
-            << "      \"latency_us\": " << r.latency_us << "\n"
-            << "    }";
-        if (i + 1 < results.size())
-        {
-            out << ",";
-        }
-        out << "\n";
-    }
-    out << "  ]\n}\n";
+    return node;
 }
 
-int main()
-{
-    std::cout << "--- AXIOM v3.1 HARDWARE BENCHMARK ---\n";
-
-    DynamicCalc engine;
-    engine.SetMode(CalculationMode::ALGEBRAIC);
-
-    std::vector<BenchmarkResult> results;
-    results.reserve(4);
-
-    // Warm-up to populate CPU L1/L2 Cache
-    RunScalarThroughputTest(engine, 1000);
-
-    std::cout << "\nRunning production benchmarks...\n";
-
-    results.push_back(RunScalarThroughputTest(engine, 1000000)); // 1 Million scalar evaluations
-    results.push_back(RunTypedFastPathTest(engine, 1000000));    // 1 Million typed fast-path evaluations
-    results.push_back(RunZeroCopyVectorTest(100000, 10000));     // 10K transfers of 100K-element vectors
-    results.push_back(RunLockFreeQueueLatencyTest(1000000));     // 1 Million IPC ping-pongs
-
-    const std::string csv_path = "benchmark_results.csv";
-    const std::string json_path = "benchmark_results.json";
-    WriteBenchmarkCsv(results, csv_path);
-    WriteBenchmarkJson(results, json_path);
-
-    std::cout << "\nSaved benchmark reports:\n";
-    std::cout << " - " << csv_path << "\n";
-    std::cout << " - " << json_path << "\n";
-
-    return 0;
+static AXIOM::Mantis::TargetProfileF32 make_test_profile_f32() {
+    AXIOM::Mantis::TargetProfileF32 profile;
+    for (size_t i = 0; i < AXIOM::Mantis::kFeatureDimFP32; ++i) {
+        profile.weights[i] = static_cast<float>(8 - i) * 0.15f;
+    }
+    return profile;
 }
+
+static void BM_MantisScalarF32(benchmark::State& state) {
+    const auto node = make_test_node_f32();
+    const auto profile = make_test_profile_f32();
+    float sink = 0.0f;
+    for (auto _ : state) {
+        sink = sink + AXIOM::Mantis::dot_scalar_f32(node, profile);
+    }
+    benchmark::DoNotOptimize(sink);
+}
+BENCHMARK(BM_MantisScalarF32);
+
+static void BM_MantisSIMDF32(benchmark::State& state) {
+    const auto node = make_test_node_f32();
+    const auto profile = make_test_profile_f32();
+    float sink = 0.0f;
+    for (auto _ : state) {
+        sink = sink + AXIOM::Mantis::MantisHeuristic::evaluate_f32(node, profile);
+    }
+    benchmark::DoNotOptimize(sink);
+}
+BENCHMARK(BM_MantisSIMDF32);

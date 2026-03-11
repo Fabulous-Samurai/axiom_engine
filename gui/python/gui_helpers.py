@@ -2,6 +2,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from typing import Optional
 
 
@@ -15,10 +16,10 @@ class CppEngineInterface:
         self.current_mode = "algebraic"
         self.process = None
         self.lock = threading.Lock()
-        self.use_persistent = True
+        self.use_persistent = bool(executable_path)
         
         # Start persistent engine
-        if self.use_persistent and executable_path:
+        if self.use_persistent:
             self._start_persistent_engine()
 
     def set_mode(self, mode: str) -> None:
@@ -104,7 +105,7 @@ class CppEngineInterface:
 
         while time.time() < timeout_time:
             if not self.process or self.process.poll() is not None:
-                raise Exception("Engine process terminated unexpectedly")
+                raise RuntimeError("Engine process terminated unexpectedly")
 
             line = self.process.stdout.readline()
             if not line:
@@ -204,19 +205,31 @@ class CppEngineInterface:
         if not self.executable_path:
             return {"success": False, "error": "C++ engine not available", "fallback_needed": True}
 
-        # Try persistent mode first
-        if self.use_persistent and self.process and self.process.poll() is None:
-            result = self._execute_persistent(command)
-            if result["success"] or not result.get("fallback_needed"):
-                return result
-            # Persistent failed, try to restart
-            self._start_persistent_engine()
-            if self.process and self.process.poll() is None:
-                result = self._execute_persistent(command)
-                if result["success"]:
-                    return result
+        persistent_result = self._run_with_persistent(command)
+        if persistent_result is not None:
+            return persistent_result
 
-        # Fallback to single-shot mode
+        return self._execute_single_shot(command)
+
+    def _run_with_persistent(self, command: str) -> Optional[dict]:
+        """Try persistent mode and one restart. Return None when single-shot fallback is needed."""
+        if not (self.use_persistent and self.process and self.process.poll() is None):
+            return None
+
+        result = self._execute_persistent(command)
+        if result["success"] or not result.get("fallback_needed"):
+            return result
+
+        self._start_persistent_engine()
+        if self.process and self.process.poll() is None:
+            result = self._execute_persistent(command)
+            if result["success"]:
+                return result
+
+        return None
+
+    def _execute_single_shot(self, command: str) -> dict:
+        """Fallback command execution using one-shot process invocation."""
         process = None
         try:
             start_time = time.time()
@@ -277,29 +290,114 @@ class CppEngineInterface:
 
 class ResultCache:
     def __init__(self, max_size: int = 100):
-        self.cache = {}
         self.max_size = max_size
         self.hits = 0
         self.misses = 0
+        self.block_fill_threshold = 0.85
+        self.max_blocks = 2
+        self.block_capacity = max(8, self.max_size // self.max_blocks)
+        self._next_block_id = 1
+        self._blocks = deque()
+        self._key_index = {}
+        self.block_rotations = 0
+        self.evicted_blocks = 0
+        self.evicted_entries = 0
+        self._create_new_block(initial=True)
 
-    def get(self, key: str):
-        if key in self.cache:
-            self.hits += 1
-            result = self.cache[key].copy()
-            result["cached"] = True
-            return result
-        self.misses += 1
+    def _create_new_block(self, initial: bool = False) -> None:
+        block = {
+            "id": self._next_block_id,
+            "entries": {},
+        }
+        self._next_block_id += 1
+        self._blocks.append(block)
+        if not initial:
+            self.block_rotations += 1
+
+        while len(self._blocks) > self.max_blocks:
+            old = self._blocks.popleft()
+            self.evicted_blocks += 1
+            self.evicted_entries += len(old["entries"])
+            for key in tuple(old["entries"].keys()):
+                if self._key_index.get(key) == old["id"]:
+                    self._key_index.pop(key, None)
+
+    def _find_block(self, block_id: int):
+        for block in self._blocks:
+            if block["id"] == block_id:
+                return block
         return None
 
+    def get(self, key: str):
+        block_id = self._key_index.get(key)
+        if block_id is None:
+            self.misses += 1
+            return None
+
+        block = self._find_block(block_id)
+        if block is None or key not in block["entries"]:
+            self._key_index.pop(key, None)
+            self.misses += 1
+            return None
+
+        self.hits += 1
+        result = block["entries"][key].copy()
+        result["cached"] = True
+        return result
+
     def put(self, key: str, value: dict) -> None:
-        if len(self.cache) >= self.max_size:
-            self.cache.pop(next(iter(self.cache)))
-        self.cache[key] = value.copy()
+        block_id = self._key_index.get(key)
+        if block_id is not None:
+            block = self._find_block(block_id)
+            if block is not None and key in block["entries"]:
+                block["entries"][key] = value.copy()
+                return
+            self._key_index.pop(key, None)
+
+        active = self._blocks[-1]
+        threshold_count = max(1, int(self.block_capacity * self.block_fill_threshold))
+        if len(active["entries"]) >= threshold_count:
+            self._create_new_block(initial=False)
+            active = self._blocks[-1]
+
+        if len(active["entries"]) >= self.block_capacity:
+            self._create_new_block(initial=False)
+            active = self._blocks[-1]
+
+        active["entries"][key] = value.copy()
+        self._key_index[key] = active["id"]
+
+    def get_block_metrics(self) -> dict:
+        active = self._blocks[-1]
+        active_count = len(active["entries"])
+        total_items = len(self._key_index)
+        active_usage_pct = (active_count / self.block_capacity * 100.0) if self.block_capacity else 0.0
+        total_capacity = self.block_capacity * self.max_blocks
+        total_usage_pct = (total_items / total_capacity * 100.0) if total_capacity else 0.0
+        return {
+            "active_usage_pct": active_usage_pct,
+            "total_usage_pct": total_usage_pct,
+            "active_items": active_count,
+            "total_items": total_items,
+            "block_capacity": self.block_capacity,
+            "blocks": len(self._blocks),
+            "max_blocks": self.max_blocks,
+            "rotations": self.block_rotations,
+            "evicted_blocks": self.evicted_blocks,
+            "evicted_entries": self.evicted_entries,
+        }
 
     def get_stats(self) -> str:
         total = self.hits + self.misses
         hit_rate = (self.hits / total * 100) if total > 0 else 0
-        return f"Cache: {len(self.cache)} items | {hit_rate:.1f}% hit rate"
+        metrics = self.get_block_metrics()
+        return (
+            "Cache: "
+            f"{metrics['total_items']} items | "
+            f"hit {hit_rate:.1f}% | "
+            f"active {metrics['active_usage_pct']:.1f}% "
+            f"({metrics['active_items']}/{metrics['block_capacity']})"
+        )
 
 
 class PerformanceMonitor:

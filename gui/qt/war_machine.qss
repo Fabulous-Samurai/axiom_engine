@@ -1,73 +1,115 @@
 QWidget {
-    background: #1A1C1E;
-    color: #E1E1E1;
-    font-family: "JetBrains Mono", "Cascadia Mono", "Consolas", monospace;
+    background: #11161d;
+    color: #b3b1ad;
+    font-family: "Inter", "JetBrains Mono", "Cascadia Mono", "Consolas", monospace;
     font-size: 10pt;
 }
 
 QMainWindow {
-    background: #1A1C1E;
+    background: #11161d;
 }
 
-QFrame#HeaderBar {
-    background: #222428;
-    border: 1px solid #2C2F34;
-    border-radius: 8px;
-}
-
-QFrame#Sidebar {
-    background: #222428;
-    border: 1px solid #2C2F34;
-    border-radius: 8px;
-}
-
+QFrame#HeaderBar,
+QFrame#Sidebar,
 QFrame#Card {
-    background: #222428;
-    border: 1px solid #2C2F34;
-    border-radius: 8px;
+    background: #0d1017;
+    border: 1px solid #262b33;
+    border-radius: 2px;
+}
+
+QFrame#TelemetryCard {
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 #0f1420,
+        stop: 0.55 #0d1017,
+        stop: 1 #111926
+    );
+    border: 1px solid #2f3a4d;
+    border-radius: 4px;
+}
+
+QLabel#PanelHeader {
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 #D1D5DB,
+        stop: 0.75 #9CA3AF,
+        stop: 1 #e6b450
+    );
+    color: #11161d;
+    border: 1px solid #e6b450;
+    border-radius: 2px;
+    padding: 4px 6px;
+    font-weight: 700;
 }
 
 QPushButton {
-    background: #222428;
-    border: 1px solid #2C2F34;
-    border-radius: 6px;
+    background: #11161d;
+    border: 1px solid #3a3f49;
+    border-radius: 2px;
     padding: 6px 10px;
-    color: #E1E1E1;
+    color: #b3b1ad;
     font-weight: 600;
 }
 
+QFrame#SidebarSubmenu {
+    background: #101621;
+    border: 1px solid #263146;
+    border-radius: 3px;
+}
+
+QFrame#SidebarSubmenu QPushButton {
+    text-align: left;
+    padding: 4px 8px;
+    border: 1px solid #2f3a4d;
+    border-radius: 2px;
+    background: #0d1017;
+    color: #9cb3cc;
+    font-size: 8.5pt;
+}
+
+QFrame#SidebarSubmenu QPushButton:hover {
+    border-color: #7ad3ff;
+    color: #d8ecff;
+}
+
 QPushButton:hover {
-    background: #2A2D32;
-    border-color: #00E5FF;
+    border-color: #e6b450;
 }
 
 QPushButton:pressed {
-    background: #193940;
+    background: #0d1017;
 }
 
 QPushButton[nav="true"] {
     text-align: center;
-    padding: 4px;
-    color: #B9C1C9;
+    padding: 2px;
+    border: 1px solid #e6b450;
+    border-radius: 2px;
+    background: #0d1017;
+    color: #b3b1ad;
+    font-weight: 700;
 }
 
 QPushButton[nav="true"]:hover {
-    color: #E1E1E1;
+    background: #e6b450;
+    color: #11161d;
 }
 
 QPushButton[nav="true"]:checked {
-    border-color: #00E5FF;
-    color: #00E5FF;
+    border-color: #e6b450;
+    background: #1b2029;
+    color: #e6b450;
 }
 
 QLabel#Title {
-    color: #00E5FF;
+    color: #e6b450;
     font-size: 14pt;
     font-weight: 700;
 }
 
-QLabel#SubTitle {
-    color: #96A0AA;
+QLabel#SubTitle,
+QLabel#Hint {
+    color: #b3b1ad;
     font-size: 9pt;
 }
 
@@ -79,84 +121,103 @@ QLabel#BrandMark {
 }
 
 QLabel#NavHint {
-    background: #202328;
-    color: #00E5FF;
-    border: 1px solid #2C2F34;
-    border-radius: 6px;
+    background: #0d1017;
+    color: #95e6cb;
+    border: 1px solid #e6b450;
+    border-radius: 2px;
     padding: 2px 6px;
     font-size: 9pt;
 }
 
-QLabel#Hint {
-    color: #96A0AA;
-}
-
 QLabel#TelemetryGood {
-    color: #00E5FF;
-    font-weight: 600;
+    color: #95e6cb;
+    font-weight: 700;
 }
 
-QLabel#TelemetryWarn {
-    color: #FFB300;
-    font-weight: 600;
-}
-
+QLabel#TelemetryWarn,
 QLabel#TelemetryHot {
-    color: #FFB300;
-    font-weight: 600;
+    color: #e6b450;
+    font-weight: 700;
+}
+
+QLabel#TelemetryChip {
+    color: #d8ecff;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 #1b2940,
+        stop: 1 #162133
+    );
+    border: 1px solid #3a5f8a;
+    border-radius: 10px;
+    padding: 3px 8px;
+    font-size: 8.5pt;
+    font-weight: 700;
 }
 
 QTableWidget {
-    background: #1F2125;
-    alternate-background-color: #222428;
-    border: 1px solid #2C2F34;
-    gridline-color: #2C2F34;
+    background: #0d1017;
+    alternate-background-color: #11161d;
+    border: 1px solid #313740;
+    border-radius: 2px;
+    gridline-color: #262b33;
 }
 
 QHeaderView::section {
-    background: #222428;
-    color: #B9C1C9;
+    background: #11161d;
+    color: #b3b1ad;
     border: none;
-    border-right: 1px solid #2C2F34;
+    border-right: 1px solid #262b33;
     padding: 6px;
     font-weight: 600;
 }
 
 QTabWidget::pane {
-    border: 1px solid #2C2F34;
-    background: #1F2125;
+    border: 1px solid #313740;
+    border-radius: 2px;
+    background: #0d1017;
 }
 
 QTabBar::tab {
-    background: #222428;
-    color: #B9C1C9;
+    background: #11161d;
+    color: #b3b1ad;
+    border: 1px solid #313740;
+    border-radius: 2px;
     padding: 6px 10px;
-    margin-right: 2px;
+    margin-right: 1px;
 }
 
 QTabBar::tab:selected {
-    background: #2A2D32;
-    color: #00E5FF;
+    border-color: #e6b450;
+    color: #e6b450;
 }
 
 QPlainTextEdit {
-    background: #1F2125;
-    border: 1px solid #2C2F34;
-    color: #E1E1E1;
+    background: #0d1017;
+    border: 1px solid #313740;
+    border-radius: 2px;
+    color: #b3b1ad;
+}
+
+QPlainTextEdit#CommandConsole {
+    background: #0d1017;
+    color: #95e6cb;
+    border: 1px solid #313740;
+    border-radius: 2px;
 }
 
 QLineEdit {
-    background: #1F2125;
-    border: 1px solid #2C2F34;
-    border-radius: 6px;
-    color: #E1E1E1;
+    background: #0d1017;
+    border: 1px solid #313740;
+    border-radius: 2px;
+    color: #b3b1ad;
     padding: 7px 10px;
 }
 
 QLineEdit#CommandPalette {
     min-height: 32px;
-    border: 1px solid #00E5FF;
-    background: #202328;
-    color: #E1E1E1;
+    border: 1px solid #e6b450;
+    border-radius: 2px;
+    background: #0d1017;
+    color: #b3b1ad;
     font-weight: 600;
 }

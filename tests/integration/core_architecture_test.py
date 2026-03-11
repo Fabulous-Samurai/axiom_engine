@@ -13,12 +13,13 @@ import subprocess
 import time
 import sys
 import os
+import pytest
 
 def find_axiom_executable():
     """Find AXIOM executable in standard locations."""
     possible_paths = [
-        "ninja-build/axiom.exe",
         "build/axiom.exe",
+        "ninja-build/axiom.exe",
         "cmake-build-debug/axiom.exe"
     ]
     
@@ -26,6 +27,15 @@ def find_axiom_executable():
         if os.path.exists(path):
             return path
     return None
+
+
+@pytest.fixture
+def axiom_path():
+    """Resolve AXIOM executable path for integration tests."""
+    path = find_axiom_executable()
+    if not path:
+        pytest.skip("AXIOM executable not found for integration tests")
+    return path
 
 def verify_architecture(axiom_path):
     """Verify AXIOM v3.0 architecture is present."""

@@ -1,4 +1,4 @@
-# 📊 AXIOM v3.0 - Performance Guide
+﻿# ğŸ“Š AXIOM v3.0 - Performance Guide
 
 ## Senna Speed Performance Metrics
 
@@ -6,25 +6,29 @@ AXIOM v3.0 is optimized for Formula 1-level performance, achieving sub-milliseco
 
 ## Performance Classification System
 
-### 🏎️ Senna Speed (Monaco GP Level)
+### ğŸï¸ Senna Speed (Monaco GP Level)
+
 - **Target**: <100ms execution time
 - **Operations**: Basic arithmetic, simple functions
 - **Engine**: Eigen CPU with SIMD optimization
 - **Examples**: `2+3`, `sin(0.5)`, `sqrt(16)`
 
-### 🏁 Formula 1 Speed  
+### ğŸ Formula 1 Speed  
+
 - **Target**: <200ms execution time
 - **Operations**: Mathematical functions, matrix operations
 - **Engine**: Selective dispatcher routing
 - **Examples**: `sin(45)*cos(30)`, matrix multiplication
 
-### 🚗 Racing Speed
+### ğŸš— Racing Speed
+
 - **Target**: <500ms execution time
 - **Operations**: Complex expressions, visualization prep
 - **Engine**: Intelligent fallback systems
 - **Examples**: `integrate(sin(x), 0, pi)`, FFT analysis
 
-### 🚙 Standard Speed
+### ğŸš™ Standard Speed
+
 - **Target**: <1000ms execution time
 - **Operations**: Heavy computations, 3D rendering
 - **Engine**: Optimized Python + C++ hybrid
@@ -49,10 +53,13 @@ auto end = std::chrono::high_resolution_clock::now();
 ### Nanobind Zero-Copy Performance
 
 ```python
+
 # Traditional Python-C++ binding (copying data)
+
 result = slow_function(large_array)  # ~50ms overhead
 
 # Nanobind zero-copy optimization  
+
 result = fast_eigen_function(large_array)  # ~0.1ms overhead
 ```
 
@@ -116,6 +123,7 @@ EngineResult SelectiveDispatcher::calculate(const std::string& expr) {
 ### For Developers
 
 1. **Use Eigen Engine for Mathematics**
+
    ```cpp
    // Preferred: Direct Eigen operations
    result = eigen_engine.evaluate("A * B + C");
@@ -125,6 +133,7 @@ EngineResult SelectiveDispatcher::calculate(const std::string& expr) {
    ```
 
 2. **Leverage Selective Dispatcher**
+
    ```cpp
    // Optimal: Let dispatcher choose
    result = dispatcher.calculate(expression);
@@ -134,6 +143,7 @@ EngineResult SelectiveDispatcher::calculate(const std::string& expr) {
    ```
 
 3. **Batch Operations**
+
    ```cpp
    // Efficient: Batch processing
    std::vector<EngineResult> results = 
@@ -148,6 +158,7 @@ EngineResult SelectiveDispatcher::calculate(const std::string& expr) {
 ### For Users
 
 1. **Use Optimal Syntax**
+
    ```matlab
    % Fast: Direct matrix notation
    A = [1 2; 3 4]; B = [5 6; 7 8]; C = A * B;
@@ -157,6 +168,7 @@ EngineResult SelectiveDispatcher::calculate(const std::string& expr) {
    ```
 
 2. **Leverage Built-in Functions**
+
    ```matlab
    % Optimized: Built-in FFT
    Y = fft(X);
@@ -170,26 +182,37 @@ EngineResult SelectiveDispatcher::calculate(const std::string& expr) {
 ### Real-Time Metrics
 
 ```python
+
 # Enable performance monitoring
+
 from gui.python.matlab_alternative_gui import MATLABAlternativeGUI
 
 # Performance metrics are automatically displayed:
-# 🏎️ <100ms = Monaco GP speed
-# 🏁 <200ms = Formula 1 speed  
-# 🚗 <500ms = Racing speed
-# 🚙 >500ms = Standard speed
+
+# ğŸï¸ <100ms = Monaco GP speed
+
+# ğŸ <200ms = Formula 1 speed  
+
+# ğŸš— <500ms = Racing speed
+
+# ğŸš™ >500ms = Standard speed
+
 ```
 
 ### Benchmarking Tools
 
 ```bash
+
 # Run comprehensive performance tests
+
 python tests/integration/senna_speed_test.py
 
 # Run specific engine benchmarks
+
 python examples/advanced/enhanced_architecture_demo.py
 
 # Monitor real-time performance
+
 python gui/python/matlab_alternative_gui.py
 ```
 
@@ -210,17 +233,20 @@ python gui/python/matlab_alternative_gui.py
 ## Target Performance Goals
 
 ### Immediate (v3.0)
-- ✅ Sub-1ms simple arithmetic
-- ✅ Sub-10ms matrix operations  
-- ✅ Sub-100ms complex expressions
-- ✅ Sub-200ms visualization prep
+
+- âœ… Sub-1ms simple arithmetic
+- âœ… Sub-10ms matrix operations  
+- âœ… Sub-100ms complex expressions
+- âœ… Sub-200ms visualization prep
 
 ### Future (v3.1+)
-- 🔄 GPU acceleration for large matrices
-- 🔄 Distributed computing for massive datasets
-- 🔄 Real-time computation streaming
-- 🔄 Hardware-specific optimizations
+
+- ğŸ”„ GPU acceleration for large matrices
+- ğŸ”„ Distributed computing for massive datasets
+- ğŸ”„ Real-time computation streaming
+- ğŸ”„ Hardware-specific optimizations
 
 ## Conclusion
 
 AXIOM v3.0 delivers professional-grade performance that matches or exceeds commercial alternatives while remaining completely free. The Eigen-optimized architecture, combined with intelligent dispatching and zero-copy Python integration, ensures that mathematical computations execute at Senna speed - the performance level demanded by Formula 1 racing and professional scientific computing.
+

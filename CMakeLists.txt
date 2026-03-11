@@ -4,15 +4,16 @@ cmake_minimum_required(VERSION 3.12)
 set(CMAKE_GENERATOR "Ninja" CACHE STRING "Generator" FORCE)
 
 # Project and Version
-project(axiom_engine VERSION 3.0.0)
+project(axiom_engine VERSION 3.1.1)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # SIMD / AVX configuration
 option(AXIOM_ENABLE_SIMD_AVX2 "Enable AVX2 SIMD instructions" ON)
 option(AXIOM_ENABLE_SIMD_FMA "Enable FMA instructions" ON)
 option(AXIOM_ENABLE_SIMD_AVX512 "Enable AVX-512 SIMD instructions" OFF)
+option(AXIOM_ENABLE_SIMD_AVX_VNNI "Enable AVX-VNNI integer dot-product instructions (Alder Lake+/Zen4+)" OFF)
 
 # Auto-install optional Python GUI dependencies via pip
 option(AXIOM_AUTO_INSTALL_PYTHON_DEPS "Install optional Python GUI dependencies via pip" ON)
@@ -21,12 +22,16 @@ option(AXIOM_ENABLE_CXX20_MODULES "Enable incremental C++20 modules migration (e
 option(AXIOM_ENABLE_NANOBIND "Enable nanobind FFI integration" ON)
 option(AXIOM_ENABLE_DOXYGEN "Enable Doxygen API documentation target" OFF)
 option(AXIOM_ENABLE_HARMONIC_ARENA "Enable HarmonicArena lock-free fast-path backend" OFF)
+option(AXIOM_ENABLE_MOLD_LINKER "Try to use mold linker for faster incremental links" OFF)
+option(AXIOM_ENABLE_SIZE_GUARDS "Enable section GC and symbol stripping in Release" ON)
+option(AXIOM_AUTO_SIGN_WINDOWS "Automatically Authenticode-sign Windows binaries after build" ON)
+set(AXIOM_WINDOWS_SIGNING_SUBJECT "CN=AXIOM Local Dev Code Signing" CACHE STRING "Subject for local Windows code-signing certificate")
 set(AXIOM_PY_REQUIREMENTS "${CMAKE_SOURCE_DIR}/requirements-optional.txt")
 
 set(AXIOM_CXX20_MODULES_ACTIVE OFF)
 if(AXIOM_ENABLE_CXX20_MODULES)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        message(STATUS "C++20 modules requested, but GNU/MinGW toolchain is unstable for this project setup; skipping module compilation in this profile.")
+        message(STATUS "C++20 modules requested, but GNU modules-ts pipeline is unstable in this profile; skipping module compilation.")
     else()
         set(AXIOM_CXX20_MODULES_ACTIVE ON)
         message(STATUS "C++20 modules migration enabled (incremental mode)")
@@ -59,6 +64,22 @@ set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-flto" CACHE STRING "Release linker flags" F
 
 message(STATUS "🏎️ NINJA OPTIMIZATION: Release mode with native CPU optimizations")
 
+if(AXIOM_ENABLE_MOLD_LINKER AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    find_program(AXIOM_MOLD_EXECUTABLE mold)
+    if(AXIOM_MOLD_EXECUTABLE)
+        add_link_options($<$<CONFIG:Release>:-fuse-ld=mold>)
+        message(STATUS "Using mold linker for Release builds")
+    else()
+        message(STATUS "mold linker requested but not found in PATH")
+    endif()
+endif()
+
+if(AXIOM_ENABLE_SIZE_GUARDS)
+    add_compile_options($<$<CONFIG:Release>:-ffunction-sections> $<$<CONFIG:Release>:-fdata-sections>)
+    add_link_options($<$<CONFIG:Release>:-Wl,--gc-sections> $<$<CONFIG:Release>:-s>)
+    message(STATUS "Release size guards enabled: function/data sections + gc-sections + strip")
+endif()
+
 # Force release mode for maximum speed
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -70,6 +91,11 @@ set(ENABLE_ADVANCED_FEATURES ON CACHE BOOL "Advanced features" FORCE)
 set(ENABLE_PARALLEL_BUILD ON CACHE BOOL "Parallel build" FORCE)
 set(ENABLE_FAST_BUILD ON CACHE BOOL "Maximum build speed" FORCE)
 set(ENABLE_LTO ON CACHE BOOL "Link Time Optimization" FORCE)
+
+# GoogleTest / GoogleBenchmark integration helper
+option(AXIOM_ENABLE_GTEST "Enable GoogleTest integration" OFF)
+option(AXIOM_ENABLE_BENCHMARK "Enable GoogleBenchmark integration" OFF)
+include(cmake/enable_gtest_benchmark.cmake)
 
 # Find Python for nanobind integration (REQUIRED for nanobind)
 find_package(Python COMPONENTS Interpreter Development REQUIRED)
@@ -153,17 +179,59 @@ configure_file(
 find_package(Threads REQUIRED)
 find_package(OpenMP QUIET)
 
+# Add tests and benchmarks when enabled
+if(AXIOM_ENABLE_GTEST)
+    if(EXISTS ${CMAKE_SOURCE_DIR}/tests)
+        add_subdirectory(tests)
+    endif()
+endif()
+if(AXIOM_ENABLE_BENCHMARK)
+    if(EXISTS ${CMAKE_SOURCE_DIR}/benchmarks)
+        add_subdirectory(benchmarks)
+    endif()
+endif()
+
+# ============================================================================
+# SIMD Feature Detection — compile-time compiler flag validation
+# ============================================================================
+include(CheckCXXCompilerFlag)
+
+set(AXIOM_HAS_AVX2 OFF)
+set(AXIOM_HAS_FMA OFF)
+set(AXIOM_HAS_AVX_VNNI OFF)
+set(AXIOM_HAS_AVX512 OFF)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    check_cxx_compiler_flag("-mavx2"     AXIOM_COMPILER_SUPPORTS_AVX2)
+    check_cxx_compiler_flag("-mfma"      AXIOM_COMPILER_SUPPORTS_FMA)
+    check_cxx_compiler_flag("-mavxvnni"  AXIOM_COMPILER_SUPPORTS_AVX_VNNI)
+    check_cxx_compiler_flag("-mavx512f"  AXIOM_COMPILER_SUPPORTS_AVX512)
+elseif(MSVC)
+    # MSVC always supports /arch:AVX2 on x64; VNNI requires checking __AVX_VNNI__ macro
+    set(AXIOM_COMPILER_SUPPORTS_AVX2 ON)
+    set(AXIOM_COMPILER_SUPPORTS_FMA ON)
+    set(AXIOM_COMPILER_SUPPORTS_AVX_VNNI OFF)  # MSVC lacks a dedicated VNNI flag
+    set(AXIOM_COMPILER_SUPPORTS_AVX512 OFF)
+endif()
+
 set(AXIOM_SIMD_FLAGS "")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|x64|i.86")
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        if(AXIOM_ENABLE_SIMD_AVX2)
+        if(AXIOM_ENABLE_SIMD_AVX2 AND AXIOM_COMPILER_SUPPORTS_AVX2)
             list(APPEND AXIOM_SIMD_FLAGS -mavx2)
+            set(AXIOM_HAS_AVX2 ON)
         endif()
-        if(AXIOM_ENABLE_SIMD_FMA)
+        if(AXIOM_ENABLE_SIMD_FMA AND AXIOM_COMPILER_SUPPORTS_FMA)
             list(APPEND AXIOM_SIMD_FLAGS -mfma)
+            set(AXIOM_HAS_FMA ON)
         endif()
-        if(AXIOM_ENABLE_SIMD_AVX512)
+        if(AXIOM_ENABLE_SIMD_AVX_VNNI AND AXIOM_COMPILER_SUPPORTS_AVX_VNNI)
+            list(APPEND AXIOM_SIMD_FLAGS -mavxvnni)
+            set(AXIOM_HAS_AVX_VNNI ON)
+        endif()
+        if(AXIOM_ENABLE_SIMD_AVX512 AND AXIOM_COMPILER_SUPPORTS_AVX512)
             list(APPEND AXIOM_SIMD_FLAGS -mavx512f -mavx512dq -mavx512vl)
+            set(AXIOM_HAS_AVX512 ON)
         endif()
     elseif(MSVC)
         if(AXIOM_ENABLE_SIMD_AVX512)
@@ -171,23 +239,72 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|x64|i.86")
         endif()
         if(AXIOM_ENABLE_SIMD_AVX2)
             list(APPEND AXIOM_SIMD_FLAGS /arch:AVX2)
+            set(AXIOM_HAS_AVX2 ON)
+            set(AXIOM_HAS_FMA ON)  # /arch:AVX2 implies FMA on MSVC
         endif()
     endif()
+
+    # Status report
+    message(STATUS "SIMD Feature Detection Results:")
+    message(STATUS "  AVX2     : ${AXIOM_HAS_AVX2}")
+    message(STATUS "  FMA      : ${AXIOM_HAS_FMA}")
+    message(STATUS "  AVX-VNNI : ${AXIOM_HAS_AVX_VNNI}")
+    message(STATUS "  AVX-512  : ${AXIOM_HAS_AVX512}")
 endif()
 
 function(axiom_apply_simd_flags target_name)
     if(AXIOM_SIMD_FLAGS)
         target_compile_options(${target_name} PRIVATE ${AXIOM_SIMD_FLAGS})
     endif()
-    if(AXIOM_ENABLE_SIMD_AVX2)
+    if(AXIOM_HAS_AVX2)
         target_compile_definitions(${target_name} PRIVATE AXIOM_SIMD_AVX2_ENABLED EIGEN_VECTORIZE_AVX2)
     endif()
-    if(AXIOM_ENABLE_SIMD_FMA)
+    if(AXIOM_HAS_FMA)
         target_compile_definitions(${target_name} PRIVATE AXIOM_SIMD_FMA_ENABLED EIGEN_VECTORIZE_FMA)
     endif()
-    if(AXIOM_ENABLE_SIMD_AVX512)
+    if(AXIOM_HAS_AVX_VNNI)
+        target_compile_definitions(${target_name} PRIVATE AXIOM_SIMD_AVX_VNNI_ENABLED)
+    endif()
+    if(AXIOM_HAS_AVX512)
         target_compile_definitions(${target_name} PRIVATE AXIOM_SIMD_AVX512_ENABLED EIGEN_VECTORIZE_AVX512)
     endif()
+endfunction()
+
+if(WIN32)
+    find_program(AXIOM_POWERSHELL_EXECUTABLE NAMES pwsh powershell)
+endif()
+
+function(axiom_enable_windows_signing target_name)
+    if(NOT WIN32)
+        return()
+    endif()
+
+    if(NOT AXIOM_AUTO_SIGN_WINDOWS)
+        return()
+    endif()
+
+    if(NOT AXIOM_POWERSHELL_EXECUTABLE)
+        message(WARNING "AXIOM_AUTO_SIGN_WINDOWS is ON, but no PowerShell executable was found")
+        return()
+    endif()
+
+    add_custom_command(
+        TARGET ${target_name}
+        POST_BUILD
+        COMMAND "${AXIOM_POWERSHELL_EXECUTABLE}"
+                -NoProfile
+                -ExecutionPolicy
+                Bypass
+                -File
+                "${CMAKE_SOURCE_DIR}/scripts/sign_binary.ps1"
+                -FilePath
+                "$<TARGET_FILE:${target_name}>"
+                -Subject
+                "${AXIOM_WINDOWS_SIGNING_SUBJECT}"
+                -CreateIfMissing
+        COMMENT "Authenticode signing: $<TARGET_FILE_NAME:${target_name}>"
+        VERBATIM
+    )
 endfunction()
 
 if(AXIOM_ENABLE_HARMONIC_ARENA)
@@ -227,8 +344,7 @@ endif()
 set(ENHANCED_SOURCES
     src/eigen_engine.cpp
     src/cpu_optimization.cpp
-    # Temporarily disabled until Eigen3 is available
-    # core/engine/eigen_engine.cpp
+    src/mantis_heuristic.cpp
     core/dispatch/selective_dispatcher.cpp
     core/dispatch/selective_dispatcher_capi.cpp
 )
@@ -240,8 +356,8 @@ endif()
 set(ENHANCED_HEADERS
     include/eigen_engine.h
     include/cpu_optimization.h
-    # Temporarily disabled until Eigen3 is available
-    # core/engine/eigen_engine.h
+    include/mantis_heuristic.h
+    include/mantis_solver.h
     core/dispatch/selective_dispatcher.h
     core/dispatch/selective_dispatcher_capi.h
 )
@@ -285,10 +401,25 @@ add_executable(axiom
         ${PYTHON_HEADERS}
 )
 
+if(WIN32)
+    target_sources(axiom PRIVATE resources/windows/axiom_version.rc)
+endif()
+
 target_link_libraries(axiom 
     PRIVATE 
     Threads::Threads
 )
+
+# telemetry_shm.hpp uses shm_open/mmap (header-only; no extra sources needed).
+# On Linux with glibc < 2.17, shm_open lives in librt; later versions inline
+# it into libc.  Linking librt unconditionally on Linux is safe and harmless.
+if(UNIX AND NOT APPLE)
+    find_library(RT_LIBRARY rt)
+    if(RT_LIBRARY)
+        target_link_libraries(axiom PRIVATE ${RT_LIBRARY})
+        message(STATUS "Linking librt for shm_open (telemetry_shm.hpp)")
+    endif()
+endif()
 axiom_apply_simd_flags(axiom)
 
 # Link OpenMP if available
@@ -335,6 +466,8 @@ if(ENABLE_PARALLEL_BUILD)
     message(STATUS "Parallel computing support enabled")
 endif()
 
+axiom_enable_windows_signing(axiom)
+
 
 add_executable(run_tests
         tests/tests.cpp
@@ -369,6 +502,11 @@ target_link_libraries(run_tests
     PRIVATE 
     Threads::Threads
 )
+if(AXIOM_ENABLE_GTEST AND TARGET GTest::gtest_main)
+    target_link_libraries(run_tests PRIVATE GTest::gtest_main)
+    message(STATUS "Integrating GoogleTest for run_tests")
+endif()
+
 axiom_apply_simd_flags(run_tests)
 
 # Link Python libraries for tests if available
@@ -376,6 +514,8 @@ if(ENABLE_PYTHON_FFI)
     target_link_libraries(run_tests PRIVATE Python::Python)
     target_include_directories(run_tests PRIVATE ${Python_INCLUDE_DIRS})
 endif()
+
+axiom_enable_windows_signing(run_tests)
 
 add_executable(axiom_benchmark
         tests/benchmark_suite.cpp
@@ -404,12 +544,19 @@ target_link_libraries(axiom_benchmark
     PRIVATE
     Threads::Threads
 )
+if(AXIOM_ENABLE_BENCHMARK AND TARGET benchmark::benchmark_main)
+    target_link_libraries(axiom_benchmark PRIVATE benchmark::benchmark_main)
+    message(STATUS "Integrating GoogleBenchmark for axiom_benchmark")
+endif()
+
 axiom_apply_simd_flags(axiom_benchmark)
 
 if(ENABLE_PYTHON_FFI AND AXIOM_ENABLE_EMBEDDED_PYTHON_ENGINE)
     target_link_libraries(axiom_benchmark PRIVATE Python::Python)
     target_include_directories(axiom_benchmark PRIVATE ${Python_INCLUDE_DIRS})
 endif()
+
+axiom_enable_windows_signing(axiom_benchmark)
 
 
 # ============================================================================
@@ -483,6 +630,8 @@ if(BUILD_GIGA_TESTS)
             core/dispatch/selective_dispatcher.cpp
         )
     endif()
+
+    axiom_enable_windows_signing(giga_test_suite)
     
     message(STATUS "🚀 Giga Test Suite configured successfully")
 endif()
@@ -492,8 +641,9 @@ endif()
 # ============================================================================
 if(AXIOM_CXX20_MODULES_ACTIVE)
     add_library(axiom_modules_pilot OBJECT
-        modules/axiom_dynamic_calc_types_module.cpp
-        modules/axiom_fast_math_module.cpp
+        modules/axiom_dynamic_calc_types_module.ixx
+        modules/axiom_fast_math_module.ixx
+        modules/axiom_signal_exec_module.ixx
     )
 
     target_include_directories(axiom_modules_pilot PRIVATE
@@ -515,6 +665,7 @@ endif()
 add_executable(ast_drills tests/ast_drills.cpp)
 target_include_directories(ast_drills PRIVATE "${CMAKE_SOURCE_DIR}/include")
 axiom_apply_simd_flags(ast_drills)
+axiom_enable_windows_signing(ast_drills)
 
 if(AXIOM_SIMD_FLAGS)
     string(JOIN " " AXIOM_SIMD_FLAGS_STR ${AXIOM_SIMD_FLAGS})
@@ -529,26 +680,109 @@ endif()
 if(AXIOM_ENABLE_DOXYGEN)
     find_package(Doxygen QUIET)
 
-    if(DOXYGEN_FOUND)
-        set(AXIOM_DOXYGEN_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/docs/api")
-        set(AXIOM_DOXYGEN_IN "${CMAKE_SOURCE_DIR}/Doxyfile.in")
-        set(AXIOM_DOXYGEN_OUT "${CMAKE_BINARY_DIR}/Doxyfile")
+    set(AXIOM_DOXYGEN_IN "${CMAKE_SOURCE_DIR}/docs/Doxyfile.in")
+    set(AXIOM_DOXYGEN_OUT "${CMAKE_BINARY_DIR}/Doxyfile")
 
-        if(EXISTS "${AXIOM_DOXYGEN_IN}")
-            configure_file("${AXIOM_DOXYGEN_IN}" "${AXIOM_DOXYGEN_OUT}" @ONLY)
+    if(EXISTS "${AXIOM_DOXYGEN_IN}")
+        configure_file("${AXIOM_DOXYGEN_IN}" "${AXIOM_DOXYGEN_OUT}" @ONLY)
 
-            add_custom_target(docs
-                COMMAND "${DOXYGEN_EXECUTABLE}" "${AXIOM_DOXYGEN_OUT}"
-                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-                COMMENT "Generating API documentation in docs/api"
-                VERBATIM
-            )
+        add_custom_target(docs
+            COMMAND "${DOXYGEN_EXECUTABLE}" "${AXIOM_DOXYGEN_OUT}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            COMMENT "Generating API documentation in docs/api"
+            VERBATIM
+        )
 
-            message(STATUS "Doxygen docs target enabled: 'docs' -> ${AXIOM_DOXYGEN_OUTPUT_DIR}")
-        else()
-            message(WARNING "AXIOM_ENABLE_DOXYGEN is ON but Doxyfile.in was not found at ${AXIOM_DOXYGEN_IN}")
-        endif()
+        message(STATUS "Doxygen docs target enabled: 'docs' -> ${AXIOM_DOXYGEN_OUTPUT_DIR}")
     else()
+        message(WARNING "AXIOM_ENABLE_DOXYGEN is ON but Doxyfile.in was not found at ${AXIOM_DOXYGEN_IN}")
+    endif()
+
+    if(NOT DOXYGEN_EXECUTABLE)
         message(WARNING "AXIOM_ENABLE_DOXYGEN is ON but Doxygen was not found")
     endif()
+endif()
+
+# ============================================================================
+# AXIOM VULKAN EXPRESSWAY — offscreen GPU renderer shared library
+# Requires: Vulkan SDK (find_package Vulkan), glslc shader compiler.
+# Python bridge (gui/vulkan/vulkan_bridge.py) falls back to QOpenGLWidget
+# when this library is absent.
+# ============================================================================
+option(AXIOM_ENABLE_VULKAN "Build Vulkan Expressway offscreen GPU renderer" ON)
+
+if(AXIOM_ENABLE_VULKAN)
+    find_package(Vulkan QUIET)
+
+    if(Vulkan_FOUND)
+        message(STATUS "🔥 Vulkan found: ${Vulkan_VERSION}")
+
+        # Locate glslc shader compiler
+        find_program(GLSLC_EXECUTABLE
+            NAMES glslc
+            HINTS
+                ENV VULKAN_SDK PATH_SUFFIXES Bin bin
+                "${Vulkan_INCLUDE_DIRS}/../Bin"
+                "${Vulkan_INCLUDE_DIRS}/../bin"
+        )
+
+        if(NOT GLSLC_EXECUTABLE)
+            message(STATUS "  glslc not found — skipping SPIR-V compilation")
+            message(STATUS "  axiom_vulkan library will NOT be built until glslc is available")
+        else()
+            message(STATUS "  glslc: ${GLSLC_EXECUTABLE}")
+
+            # Output directory for compiled SPIR-V
+            set(AXIOM_SHADER_OUT "${CMAKE_BINARY_DIR}/shaders")
+            file(MAKE_DIRECTORY "${AXIOM_SHADER_OUT}")
+
+            # Compile GLSL → SPIR-V
+            set(AXIOM_SPIRV_FILES "")
+            foreach(_shader axiom3d.vert axiom3d.frag)
+                set(_src "${CMAKE_SOURCE_DIR}/shaders/${_shader}")
+                set(_spv "${AXIOM_SHADER_OUT}/${_shader}.spv")
+                add_custom_command(
+                    OUTPUT  "${_spv}"
+                    COMMAND "${GLSLC_EXECUTABLE}" "${_src}" -o "${_spv}"
+                    DEPENDS "${_src}"
+                    COMMENT "glslc: compiling ${_shader} → ${_shader}.spv"
+                    VERBATIM
+                )
+                list(APPEND AXIOM_SPIRV_FILES "${_spv}")
+            endforeach()
+
+            add_custom_target(axiom_shaders DEPENDS ${AXIOM_SPIRV_FILES})
+
+            # Build shared library
+            add_library(axiom_vulkan SHARED
+                src/vulkan_expressway.cpp
+                include/vulkan_expressway.h
+            )
+            add_dependencies(axiom_vulkan axiom_shaders)
+
+            target_include_directories(axiom_vulkan PRIVATE
+                "${CMAKE_SOURCE_DIR}/include"
+                ${Vulkan_INCLUDE_DIRS}
+            )
+            target_compile_definitions(axiom_vulkan PRIVATE AXIOM_VULKAN_BUILD)
+            target_link_libraries(axiom_vulkan PRIVATE ${Vulkan_LIBRARIES})
+
+            if(WIN32)
+                # Place DLL alongside the main executable
+                set_target_properties(axiom_vulkan PROPERTIES
+                    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+                )
+            endif()
+
+            axiom_enable_windows_signing(axiom_vulkan)
+            message(STATUS "  ✓ axiom_vulkan shared library target enabled")
+            message(STATUS "  ✓ SPIR-V output: ${AXIOM_SHADER_OUT}/")
+        endif()
+    else()
+        message(STATUS "Vulkan SDK not found — axiom_vulkan GPU renderer skipped")
+        message(STATUS "  Install Vulkan SDK from https://vulkan.lunarg.com/")
+        message(STATUS "  Python falls back to QOpenGLWidget hardware renderer")
+    endif()
+else()
+    message(STATUS "AXIOM_ENABLE_VULKAN=OFF — Vulkan Expressway disabled")
 endif()

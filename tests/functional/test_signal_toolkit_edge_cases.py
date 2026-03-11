@@ -5,6 +5,7 @@ Non-interactive (matplotlib Agg, messagebox patched)
 """
 import sys
 from pathlib import Path
+import pytest
 
 import matplotlib
 matplotlib.use('Agg')
@@ -20,6 +21,12 @@ messagebox.showinfo = lambda *args, **kwargs: None
 
 from signal_processing_toolkit import SignalProcessingToolkit
 import numpy as np
+
+
+@pytest.fixture
+def toolkit():
+    """Provide a fresh toolkit instance per test for deterministic behavior."""
+    return SignalProcessingToolkit()
 
 
 def test_noise_determinism(toolkit):

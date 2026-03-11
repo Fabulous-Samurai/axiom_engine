@@ -1,5 +1,5 @@
 #pragma once
-#include "IParser.h"
+#include "iParser.h"
 #include "dynamic_calc_types.h" // Contains 'enum class Precedence'
 #include <map>
 #include <string>
@@ -28,7 +28,7 @@ public:
     
     void allocateBlock(size_t size) {
         auto mem = std::make_unique<char[]>(size);
-        blocks.push_back({std::move(mem), size, 0});
+        blocks.emplace_back(std::move(mem), size, 0);
     }
     void reset() { 
         // AXIOM v3.1: Rewind Strategy - prevent heap fragmentation in Daemon Mode
@@ -46,7 +46,7 @@ public:
     T* alloc(Args&&... args) {
         size_t sizeNeeded = sizeof(T); size_t align = alignof(T);
         Block* current = &blocks.back();
-        uintptr_t currentPtr = (uintptr_t)(current->memory.get() + current->used);
+        auto currentPtr = (uintptr_t)(current->memory.get() + current->used);
         size_t padding = (align - (currentPtr % align)) % align;
         
         if (current->used + padding + sizeNeeded > current->size) {
@@ -65,8 +65,34 @@ public:
     }
 };
 
+namespace AXIOM {
+
+enum class NodeType {
+    Number,
+    Variable,
+    BinaryOp,
+    UnaryOp,
+    MultiArgFunction
+};
+
 // ========================================================
-// 2. AST NODE DEFINITIONS
+// 2. TRANSPARENT HASH & MAP ALIASES (Sonar S6045)
+// ========================================================
+struct StringHash {
+    using is_transparent = void;
+    size_t operator()(std::string_view sv) const {
+        return std::hash<std::string_view>{}(sv);
+    }
+};
+
+template<typename V>
+using StringUnorderedMap = std::unordered_map<std::string, V, StringHash, std::equal_to<>>;
+
+template<typename V>
+using StringMap = std::map<std::string, V, std::less<>>;
+
+// ========================================================
+// 3. AST NODE DEFINITIONS
 // ========================================================
 
 struct ExprNode;
@@ -114,8 +140,9 @@ struct EvalResult {
 
 struct ExprNode {
     virtual ~ExprNode() = default;
+    virtual NodeType GetType() const = 0;
     // AXIOM v3.1: Enhanced context to support complex variables
-    virtual EvalResult Evaluate(const std::map<std::string, AXIOM::Number>& vars) const = 0;
+    virtual EvalResult Evaluate(const StringUnorderedMap<AXIOM::Number>& vars) const = 0;
     virtual NodePtr Derivative(Arena& arena, std::string_view var) const = 0;
     virtual NodePtr Simplify(Arena& arena) const = 0;
 
@@ -137,16 +164,37 @@ public:
     EngineResult ParseAndExecute(const std::string& input) override;
     
     // [NEW] Execution with Context (Critical for 'Ans' variable and complex numbers)
-    EngineResult ParseAndExecuteWithContext(const std::string& input, const std::map<std::string, AXIOM::Number>& context);
+    EngineResult ParseAndExecuteWithContext(const std::string& input, const StringUnorderedMap<AXIOM::Number>& context);
+
+    // Compatibility overload for ordered-map callers.
+    EngineResult ParseAndExecuteWithContext(const std::string& input, const StringMap<AXIOM::Number>& context) {
+        StringUnorderedMap<AXIOM::Number> fast_context;
+        fast_context.reserve(context.size());
+        for (const auto& [key, value] : context) {
+            fast_context.emplace(key, value);
+        }
+        return ParseAndExecuteWithContext(input, fast_context);
+    }
     
     // Legacy compatibility method
-    EngineResult ParseAndExecuteWithContext(const std::string& input, const std::map<std::string, double>& context) {
+    EngineResult ParseAndExecuteWithContext(const std::string& input, const StringUnorderedMap<double>& context) {
         // Convert double context to Number context
-        std::map<std::string, AXIOM::Number> number_context;
+        StringUnorderedMap<AXIOM::Number> number_context;
+        number_context.reserve(context.size());
         for (const auto& [key, value] : context) {
             number_context[key] = AXIOM::Number(value);
         }
         return ParseAndExecuteWithContext(input, number_context);
+    }
+
+    // Compatibility overload for ordered-map callers.
+    EngineResult ParseAndExecuteWithContext(const std::string& input, const StringMap<double>& context) {
+        StringUnorderedMap<double> fast_context;
+        fast_context.reserve(context.size());
+        for (const auto& [key, value] : context) {
+            fast_context.emplace(key, value);
+        }
+        return ParseAndExecuteWithContext(input, fast_context);
     }
 
 private:
@@ -154,8 +202,8 @@ private:
     mutable std::shared_mutex mutex_s;
 
     // Performance: Expression memoization cache
-    mutable std::unordered_map<std::string, EvalResult> eval_cache_;
-    mutable std::unordered_map<std::string, NodePtr> parse_cache_;
+    mutable StringUnorderedMap<EvalResult> eval_cache_;
+    mutable StringUnorderedMap<NodePtr> parse_cache_;
     static constexpr size_t MAX_CACHE_SIZE = 1000;
 
     struct CommandEntry { std::string command; std::function<EngineResult(const std::string&)> handler; };
@@ -170,5 +218,7 @@ private:
     EngineResult HandlePlotFunction(const std::string& input);
     
     EngineResult SolveQuadratic(double a, double b, double c);
-    EngineResult SolveNonLinearSystem(const std::vector<std::string>& equations, std::map<std::string, double>& guess);
+    EngineResult SolveNonLinearSystem(const std::vector<std::string>& equations, StringUnorderedMap<double>& guess);
 };
+
+} // namespace AXIOM

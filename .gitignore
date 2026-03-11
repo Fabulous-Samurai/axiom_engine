@@ -107,7 +107,13 @@ docs/_build/
 docs/.doctrees/
 
 # Doxygen generated output
+docs/doxygen/
 html/
+html_*/
+html\\_*
+html_*_icgraph.map
+html_*_icgraph.md5
+html_*_icgraph.png
 latex/
 xml/
 rtf/
@@ -148,6 +154,26 @@ version.h
 config.h
 autotools.cache/
 
+# Reports and temporary docs
+PR_REPORT_* 
+docs/reports/
+
+# Formal model output
+formal/tla/
+
+# GUI helpers / scratch
+gui/qt/telemetry_reader.py
+gui/qt/icons/tests.svg
+
+# Vulkan development
+gui/vulkan/
+include/telemetry_shm.hpp
+include/vulkan_expressway.h
+src/vulkan_expressway.cpp
+
+# Module pilots (source once compiled elsewhere)
+modules/*.ixx
+
 # Package managers
 conan.lock
 ConanInfo.txt
@@ -167,16 +193,18 @@ archive/
 
 # Local analysis/tooling artifacts (do not commit)
 codeql/
-codeql-db-*/
 codeql-*.zip
+
+# Scratch / temporary experiment files
+scratch/
 
 # Local session/temp workspace folders
 tmpclaude-*/
 states/
 
 # Generated benchmark output files
-benchmark_results.csv
-benchmark_results.json
+output/benchmark_results.csv
+output/benchmark_results.json
 
 # Local CodeQL test project db cache
 codeql-custom-queries-python/*.testproj/

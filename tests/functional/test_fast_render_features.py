@@ -7,6 +7,7 @@ import sys
 import os
 from pathlib import Path
 import numpy as np
+import pytest
 
 # Setup paths
 project_root = Path(__file__).parent.parent.parent
@@ -18,7 +19,13 @@ import matplotlib
 matplotlib.use('Agg')
 
 import tkinter as tk
-from axiom_pro_gui import AxiomProGUI
+try:
+    from axiom_pro_gui import AxiomProGUI
+except (ImportError, AttributeError):
+    pytest.skip(
+        "Legacy Tk AxiomProGUI is unavailable in current Qt-first architecture",
+        allow_module_level=True,
+    )
 
 def test_gui_initialization():
     """Test GUI initializes with new features"""
@@ -72,7 +79,7 @@ def test_decimation_logic():
         # Test _decimate_xy with small dataset (should not decimate)
         x_small = np.linspace(0, 10, 100)
         y_small = np.cos(x_small)
-        x_dec2, y_dec2 = app._decimate_xy(x_small, y_small, target_points=5000)
+        x_dec2, _ = app._decimate_xy(x_small, y_small, target_points=5000)
         
         assert x_dec2.size == x_small.size, "Small dataset incorrectly decimated"
         print(f"  ✅ XY small dataset preserved: {x_small.size} points")
@@ -80,15 +87,15 @@ def test_decimation_logic():
         # Test _decimate_grid with 2D mesh
         x = np.linspace(-5, 5, 200)
         y = np.linspace(-5, 5, 200)
-        X, Y = np.meshgrid(x, y)
-        Z = np.sin(np.sqrt(X**2 + Y**2))
-        
-        X_dec, Y_dec, Z_dec = app._decimate_grid(X, Y, Z, target_side=100)
-        
-        assert X_dec.shape[0] <= 100, f"Grid decimation failed: {X_dec.shape[0]} > 100"
-        assert Y_dec.shape[0] <= 100, f"Grid decimation failed: {Y_dec.shape[0]} > 100"
-        assert Z_dec.shape == X_dec.shape, "Grid shapes mismatch after decimation"
-        print(f"  ✅ Grid decimation: {X.shape} → {X_dec.shape}")
+        x_grid, y_grid = np.meshgrid(x, y)
+        z_grid = np.sin(np.sqrt(x_grid**2 + y_grid**2))
+
+        x_dec_g, y_dec_g, z_dec_g = app._decimate_grid(x_grid, y_grid, z_grid, target_side=100)
+
+        assert x_dec_g.shape[0] <= 100, f"Grid decimation failed: {x_dec_g.shape[0]} > 100"
+        assert y_dec_g.shape[0] <= 100, f"Grid decimation failed: {y_dec_g.shape[0]} > 100"
+        assert z_dec_g.shape == x_dec_g.shape, "Grid shapes mismatch after decimation"
+        print(f"  ✅ Grid decimation: {x_grid.shape} → {x_dec_g.shape}")
         
         root.destroy()
         print("  ✅ Decimation logic: PASS")
